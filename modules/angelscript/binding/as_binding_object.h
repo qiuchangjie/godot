@@ -9,7 +9,10 @@
 // 原因是 AS 2.38 里任何一次 Register* 失败都会给引擎置上 configFailed，
 // 之后所有编译都会报 "Invalid configuration"，不可恢复。
 //
-// 对象在 AS 侧的存储就是 Object*（sizeof(void*)），行为由 generic trampoline 转发到 MethodBind / Object::get|set。
+// 对象句柄在 AS 侧的存储是 `sizeof(void*)` 的槽，槽内容由静态类型决定（spec §3）：
+//   OWNING     槽 = 裸 Object*（对象派生自 RefCounted，由 AS 的 addref/release 保活）。
+//   NONOWNING  槽 = ObjectID（对象可能随时被 free()，每次解引用前必须经 ObjectDB 校验）。
+// 所有槽的读写都必须走下面这两个函数，不允许在别处直接强转。
 
 #include "as_binding_plan.h"
 #include "core/error/error_list.h"
@@ -17,6 +20,14 @@
 #include "core/variant/variant.h"
 
 #include <angelscript.h>
+
+class Object;
+
+// 对象句柄槽 <-> Object* 的唯一转换点（spec §3.2）。
+// 解码失败返回 nullptr（对象已释放、槽为 0 哨兵、或 kind 语义不符），调用方负责 set_exception。
+Object *as_handle_decode(void *p_slot, ASBindingKind p_kind);
+// 编码：p_obj == nullptr 时返回 nullptr（即 null 句柄）。
+void *as_handle_encode(Object *p_obj, ASBindingKind p_kind);
 
 class ASBindingObject {
 public:

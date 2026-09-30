@@ -23,10 +23,13 @@ struct ASObjectBinding {
 	MethodBind *bind = nullptr;
 	Vector<ASBindingKind> param_kinds;
 	ASBindingKind return_kind = AS_KIND_VOID;
+	// self 槽的语义：由所属类是否派生自 RefCounted 决定（spec §0 R3）。
+	ASBindingKind object_kind = AS_KIND_OBJECT_NONOWNING;
 };
 
 struct ASObjectFactoryBinding {
 	StringName class_name;
+	ASBindingKind object_kind = AS_KIND_OBJECT_NONOWNING;
 };
 
 // RegisterGlobalProperty 要求存储地址一直有效到引擎销毁，所以用 memnew 泄漏，
@@ -65,6 +68,31 @@ ASObjectBinding *get_binding(asIScriptGeneric *p_gen, ASObjectBinding::Kind p_ex
 
 } // namespace
 
+Object *as_handle_decode(void *p_slot, ASBindingKind p_kind) {
+	if (p_kind == AS_KIND_OBJECT_OWNING) {
+		// 拥有句柄：槽里就是裸指针，且 AS 的 addref/release 保证它在本句柄存活期间有效。
+		return (Object *)p_slot;
+	}
+	// 非拥有句柄：槽里是 ObjectID（0 为 null 哨兵）。
+	// 对象可能已被 free()，所以每次都要经 ObjectDB 查表；查不到即为失效句柄。
+	const ObjectID id((uint64_t)(uintptr_t)p_slot);
+	if (!id.is_valid()) {
+		return nullptr;
+	}
+	return ObjectDB::get_instance(id);
+}
+
+void *as_handle_encode(Object *p_obj, ASBindingKind p_kind) {
+	if (p_obj == nullptr) {
+		return nullptr;
+	}
+	if (p_kind == AS_KIND_OBJECT_OWNING) {
+		return (void *)p_obj;
+	}
+	// 非拥有：只交出 ID，绝不交出裸指针 —— 否则 AS 侧会绕过 ObjectDB 直接解引用已释放对象。
+	return (void *)(uintptr_t)(uint64_t)p_obj->get_instance_id();
+}
+
 Error ASBindingObject::register_skeleton(const ASBindingClass &p_class, asIScriptEngine *p_engine) {
 	ERR_FAIL_COND_V(p_engine == nullptr, ERR_INVALID_PARAMETER);
 
@@ -93,6 +121,7 @@ Error ASBindingObject::register_skeleton(const ASBindingClass &p_class, asIScrip
 	if (p_class.instantiable) {
 		ASObjectFactoryBinding *fb = memnew(ASObjectFactoryBinding);
 		fb->class_name = p_class.name;
+		fb->object_kind = refcounted ? AS_KIND_OBJECT_OWNING : AS_KIND_OBJECT_NONOWNING;
 		const String decl = String(p_class.name) + "@ f()";
 		const CharString cdecl_utf8 = decl.utf8();
 		attach_binding(p_engine, p_engine->RegisterObjectBehaviour(cname.get_data(), asBEHAVE_FACTORY, cdecl_utf8.get_data(), asFUNCTION(generic_instantiate), asCALL_GENERIC), fb);
@@ -115,6 +144,11 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 	}
 	g_registered_classes.insert(p_class.name);
 
+	// self 槽语义与 register_skeleton 的 addref/release 选择必须一致：同一判据、同一处推导。
+	const ASBindingKind class_kind = ClassDB::is_parent_class(p_class.name, "RefCounted")
+			? AS_KIND_OBJECT_OWNING
+			: AS_KIND_OBJECT_NONOWNING;
+
 	for (const ASBindingMethod &m : p_class.methods) {
 		if (m.bind == nullptr || m.is_static) {
 			continue;
@@ -125,6 +159,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		b->bind = m.bind;
 		b->param_kinds = m.param_kinds;
 		b->return_kind = m.return_kind;
+		b->object_kind = class_kind;
 		const CharString decl = m.as_decl.utf8();
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), decl.get_data(), asFUNCTION(generic_method_call), asCALL_GENERIC), b);
 	}
@@ -153,6 +188,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		gb->kind = ASObjectBinding::KIND_PROPERTY_GET;
 		gb->member = p.name;
 		gb->return_kind = p.kind;
+		gb->object_kind = class_kind;
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cgdecl.get_data(), asFUNCTION(generic_property_get), asCALL_GENERIC), gb);
 
 		if (p.read_only) {
@@ -165,6 +201,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		sb->kind = ASObjectBinding::KIND_PROPERTY_SET;
 		sb->member = p.name;
 		sb->param_kinds.push_back(p.kind);
+		sb->object_kind = class_kind;
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), csdecl.get_data(), asFUNCTION(generic_property_set), asCALL_GENERIC), sb);
 	}
 
@@ -248,9 +285,10 @@ void ASBindingObject::generic_method_call(asIScriptGeneric *p_gen) {
 	if (b == nullptr) {
 		return;
 	}
-	Object *self = (Object *)p_gen->GetObject();
+	Object *self = as_handle_decode(p_gen->GetObject(), b->object_kind);
 	if (self == nullptr) {
-		set_exception("AngelScript: null instance");
+		// 两种原因合并成一条：槽为 null，或非拥有句柄指向的对象已经被 free()。
+		set_exception("AngelScript: object handle is null or the object has been freed");
 		return;
 	}
 
@@ -285,9 +323,10 @@ void ASBindingObject::generic_property_get(asIScriptGeneric *p_gen) {
 	if (b == nullptr) {
 		return;
 	}
-	Object *self = (Object *)p_gen->GetObject();
+	Object *self = as_handle_decode(p_gen->GetObject(), b->object_kind);
 	if (self == nullptr) {
-		set_exception("AngelScript: null instance");
+		// 两种原因合并成一条：槽为 null，或非拥有句柄指向的对象已经被 free()。
+		set_exception("AngelScript: object handle is null or the object has been freed");
 		return;
 	}
 	bool valid = false;
@@ -304,9 +343,10 @@ void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
 	if (b == nullptr) {
 		return;
 	}
-	Object *self = (Object *)p_gen->GetObject();
+	Object *self = as_handle_decode(p_gen->GetObject(), b->object_kind);
 	if (self == nullptr) {
-		set_exception("AngelScript: null instance");
+		// 两种原因合并成一条：槽为 null，或非拥有句柄指向的对象已经被 free()。
+		set_exception("AngelScript: object handle is null or the object has been freed");
 		return;
 	}
 	Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
@@ -331,7 +371,8 @@ void ASBindingObject::generic_instantiate(asIScriptGeneric *p_gen) {
 	}
 	// instantiate 自带一份 RefCounted 的“创建者引用”，SetReturnObject 的 addref 会通过
 	// RefCounted::init_ref 接管它，因此这里既不能额外 reference 也不能 deinit_ref。
-	p_gen->SetReturnObject(o);
+	// 非 RefCounted 走 NONOWNING：只交出 ObjectID，不交出裸指针，也不改变任何引用计数。
+	p_gen->SetReturnObject(as_handle_encode(o, fb->object_kind));
 }
 
 void ASBindingObject::generic_addref(asIScriptGeneric *p_gen) {

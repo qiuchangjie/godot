@@ -75,6 +75,8 @@ void ensure_object_binding(asIScriptEngine *p_engine) {
 // 探针用全局句柄值（存活 / 已失效两种）；它们是槽内容，不是可解引用的指针。
 uint64_t g_live_id = 0;
 uint64_t g_stale_id = 0;
+// 由真实绑定路径（factory 返回值）交出的槽原值，用来判断槽里到底是指针还是 ObjectID。
+uint64_t g_captured_slot = 0;
 
 void probe_get_live(asIScriptGeneric *p_gen) {
 	p_gen->SetReturnObject((void *)(uintptr_t)g_live_id);
@@ -97,6 +99,13 @@ void probe_decode_raw(asIScriptGeneric *p_gen) {
 	p_gen->SetReturnDWord(p_gen->GetArgObject(0) != nullptr ? 1 : 0);
 }
 
+// 抓取真实绑定路径交出的槽原值：参数由 register_skeleton 注册的 factory 返回值填入，
+// 不经过本文件任何手工编解码，因此槽里是什么就说明绑定层交出了什么。
+void probe_capture_slot(asIScriptGeneric *p_gen) {
+	g_captured_slot = (uint64_t)(uintptr_t)p_gen->GetArgObject(0);
+	p_gen->SetReturnDWord(0);
+}
+
 bool run_int(asIScriptEngine *p_engine, const String &p_source, const String &p_entry, int64_t *r_out, String *r_err) {
 	ASEngine *as = ASEngine::get_singleton();
 	if (!as->ensure_initialized() || !as->is_initialized()) {
@@ -112,6 +121,7 @@ bool run_int(asIScriptEngine *p_engine, const String &p_source, const String &p_
 		engine->RegisterGlobalFunction("Node@ probe_get_stale()", asFUNCTION(probe_get_stale), asCALL_GENERIC);
 		engine->RegisterGlobalFunction("int probe_decode(Node@)", asFUNCTION(probe_decode), asCALL_GENERIC);
 		engine->RegisterGlobalFunction("int probe_decode_raw(Node@)", asFUNCTION(probe_decode_raw), asCALL_GENERIC);
+		engine->RegisterGlobalFunction("int probe_capture_slot(Node@)", asFUNCTION(probe_capture_slot), asCALL_GENERIC);
 	}
 
 	const String module_name = "as_m3_probe_" + itos(g_module_seq++);
@@ -207,4 +217,24 @@ void as_m3_property_kind_from_static_type() {
 	REQUIRE(t.valid);
 	CHECK(t.kind == AS_KIND_OBJECT_NONOWNING);
 	CHECK(t.as_name == "Object@");
+}
+
+// 通过**真实绑定路径**验证槽语义：Node 由注册好的 factory 创建、句柄槽由绑定层填写。
+// 之前的探针是手工注册全局函数自证，这一条才能证明 as_binding_object.cpp 的跳板真的按 R2 交值。
+void as_m3_id_slot_through_real_binding() {
+	g_captured_slot = 0;
+	int64_t out = -1;
+	String err;
+	const bool ok = run_int(nullptr,
+			"int probe() {"
+			"  Node @n = Node();"
+			"  return probe_capture_slot(n);"
+			"}",
+			"probe", &out, &err);
+	INFO("error: ", err);
+	REQUIRE(ok);
+	REQUIRE(g_captured_slot != 0);
+	// 绑定层交出的必须是 ObjectID —— 能经 ObjectDB 反查回对象。
+	// 若交出的仍是裸指针，用指针值当 ObjectID 查表必然查不到（RED 时的表现）。
+	CHECK(ObjectDB::get_instance(ObjectID((uint64_t)g_captured_slot)) != nullptr);
 }

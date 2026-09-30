@@ -30,6 +30,7 @@
 
 #include "as_binding_decl.h"
 
+#include "as_binding_object.h"
 #include "core/object/class_db.h"
 
 #include <angelscript.h>
@@ -213,9 +214,8 @@ Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKi
 		}
 		case AS_KIND_OBJECT_OWNING:
 		case AS_KIND_OBJECT_NONOWNING:
-			// Task 2 保持 M2 行为：槽里就是 Object*。
-			// Task 3 会把 NONOWNING 换成经 as_handle_decode 的 ObjectID 解码。
-			return Variant((Object *)p_gen->GetArgObject(p_index));
+			// 槽的语义由 kind 决定（拥有=裸指针，非拥有=ObjectID），统一经解码单点还原。
+			return Variant(as_handle_decode(p_gen->GetArgObject(p_index), p_kind));
 		default:
 			return Variant();
 	}
@@ -238,8 +238,8 @@ void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, co
 			break;
 		case AS_KIND_OBJECT_OWNING:
 		case AS_KIND_OBJECT_NONOWNING:
-			// Task 2 保持 M2 行为（裸指针）；Task 3 换成 as_handle_encode。
-			p_gen->SetReturnObject((void *)p_value.operator Object *());
+			// 返回值同样按 kind 编码：非拥有类型只交出 ObjectID。
+			p_gen->SetReturnObject(as_handle_encode(p_value.operator Object *(), p_kind));
 			break;
 		default:
 			break;
