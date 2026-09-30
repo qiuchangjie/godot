@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  as_engine.h                                                           */
+/*  test_angelscript_builtins.h                                           */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,40 +30,17 @@
 
 #pragma once
 
-#include "core/error/error_list.h"
-#include "core/string/ustring.h"
-#include "core/variant/variant.h"
+#include "tests/test_macros.h"
 
-#include <angelscript.h>
+// 本头只注册用例（经 modules/modules_tests.gen.h 由 tests/test_main.cpp 展开，根 env 没有
+// AngelScript 的 include 路径），断言与辅助实现放在 test_angelscript_builtins.cpp。
 
-// AngelScript 引擎的唯一持有者：负责生命周期、模块编译与函数执行。
-// 主线程独占（spec §4）；ScriptServer::init_languages() 在 --test / headless 路径下
-// 不会被调用，因此这里采用懒初始化。
-class ASEngine {
-	asIScriptEngine *engine = nullptr;
-	String last_error;
+void as_builtin_log_int_is_callable_from_script();
 
-	static void _message_callback(const asSMessageInfo *p_msg, void *p_param);
+#ifndef ANGELSCRIPT_BUILTINS_TESTS_IMPL
 
-	// 注册阶段一的最小内建 API（当前只有 as_log_int），由 ensure_initialized() 调用一次。
-	void _register_builtins();
+TEST_CASE("[AngelScript] builtin as_log_int is callable from a script") {
+	as_builtin_log_int_is_callable_from_script();
+}
 
-public:
-	static ASEngine *get_singleton();
-
-	bool ensure_initialized();
-	bool is_initialized() const { return engine != nullptr; }
-	asIScriptEngine *get_engine() const { return engine; }
-
-	// 编译一个独立模块；同名模块会被整体替换。失败时把 AngelScript 诊断写入 r_error。
-	bool compile_module(const String &p_name, const String &p_source, String *r_error);
-
-	// 执行一个 AS 函数。参数编组在后续任务引入，本阶段仅支持无参函数。
-	static Error execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int p_argc, void *p_arg_ptrs, int *r_ret);
-
-	// 以 Variant 编组调用 AS 函数（ScriptInstance::callp 的通道）。只支持
-	// bool / int(int64) / float(double) 三类参数；返回值按 AS 返回类型映射为 Variant。
-	static Error call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret);
-
-	void shutdown();
-};
+#endif // ANGELSCRIPT_BUILTINS_TESTS_IMPL

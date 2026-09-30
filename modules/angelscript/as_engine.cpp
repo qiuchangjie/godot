@@ -31,6 +31,7 @@
 #include "as_engine.h"
 
 #include "core/object/object.h"
+#include "core/string/print_string.h"
 
 ASEngine *ASEngine::get_singleton() {
 	static ASEngine engine_singleton;
@@ -48,6 +49,13 @@ void ASEngine::_message_callback(const asSMessageInfo *p_msg, void *p_param) {
 	self->last_error += String(p_msg->section ? p_msg->section : "") + "(" + itos(p_msg->row) + "," + itos(p_msg->col) + "): " + String(p_msg->message ? p_msg->message : "");
 }
 
+// 内建函数一律走泛型调用约定（asCALL_GENERIC）：设计 §3 约定绑定层统一使用泛型调用，
+// 内建 API 先行遵守，避免 M2 绑定层出现两套调用约定。
+static void _as_log_int(asIScriptGeneric *p_generic) {
+	// 本阶段只提供 int 版本：字符串类型需要 RegisterStringFactory 与 Godot String 的编组（M2）。
+	print_line(itos((int)p_generic->GetArgDWord(0)));
+}
+
 bool ASEngine::ensure_initialized() {
 	if (engine != nullptr) {
 		return true;
@@ -59,7 +67,15 @@ bool ASEngine::ensure_initialized() {
 	}
 
 	engine->SetMessageCallback(asFUNCTION(_message_callback), this, asCALL_CDECL);
+
+	_register_builtins();
 	return true;
+}
+
+void ASEngine::_register_builtins() {
+	// 阶段一唯一的内建 API：让端到端验收脚本能调用宿主（spec §5、M1 交付项）。
+	const int result = engine->RegisterGlobalFunction("void as_log_int(int value)", asFUNCTION(_as_log_int), asCALL_GENERIC);
+	ERR_FAIL_COND_MSG(result < 0, vformat("Failed to register the builtin function 'as_log_int' (error %d).", result));
 }
 
 bool ASEngine::compile_module(const String &p_name, const String &p_source, String *r_error) {
