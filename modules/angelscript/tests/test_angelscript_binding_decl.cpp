@@ -101,6 +101,22 @@ void as_binding_decl_method_forms() {
 	stat.flags = METHOD_FLAG_STATIC;
 	CHECK_FALSE(ASBindingDecl::method_to_decl(stat, &decl, &reason));
 	CHECK(reason == "static-method");
+
+	// 真正返回 Variant 的方法（usage 带 NIL_IS_VARIANT）在 M2 不能退化成 void：
+	// 那会静默丢弃返回值（半注册），必须整体归为 unbound。
+	MethodInfo vari;
+	vari.name = "get_indexed";
+	vari.return_val = make_pi(Variant::NIL);
+	vari.return_val.usage = PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_NIL_IS_VARIANT;
+	CHECK_FALSE(ASBindingDecl::method_to_decl(vari, &decl, &reason));
+	CHECK(reason == "unsupported-return-type: Variant");
+
+	// 真 void 返回仍然必须可注册。
+	MethodInfo no_ret;
+	no_ret.name = "queue_free";
+	no_ret.return_val = make_pi(Variant::NIL);
+	CHECK(ASBindingDecl::method_to_decl(no_ret, &decl, &reason));
+	CHECK(decl == "void queue_free()");
 }
 
 void as_binding_decl_rejects_vararg_and_unknown() {

@@ -147,6 +147,11 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 	}
 
 	for (const ASBindingProperty &p : p_class.properties) {
+		// 属性名必须是合法标识符（plan 已过滤，这里防御性再查一次）：
+		// "frame_0/texture" 这类名字会拼出非法声明并被 AS 以 asINVALID_DECLARATION 拒绝。
+		if (!p.name.is_valid_identifier()) {
+			continue;
+		}
 		const String getter = "get_" + p.name;
 		const String setter = "set_" + p.name;
 		const CharString cgetter = getter.utf8();

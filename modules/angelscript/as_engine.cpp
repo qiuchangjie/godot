@@ -30,6 +30,8 @@
 
 #include "as_engine.h"
 
+#include "binding/as_binding_decl.h"
+#include "binding/as_binding_registry.h"
 #include "core/object/object.h"
 #include "core/string/print_string.h"
 
@@ -56,6 +58,13 @@ static void _as_log_int(asIScriptGeneric *p_generic) {
 	print_line(itos((int)p_generic->GetArgDWord(0)));
 }
 
+// 绑定层完成注册后才存在的调试出口：内建 `print` 是 vararg，AS 2.38 不可表达，
+// 因此热更脚本的字符串输出走这里。Godot `String` 值类型以 Variant 为存储，
+// 直接复用 AS_KIND_VALUE 编组。
+static void _as_log_string(asIScriptGeneric *p_generic) {
+	print_line(String(as_binding_marshal_arg(p_generic, 0, AS_KIND_VALUE)));
+}
+
 bool ASEngine::ensure_initialized() {
 	if (engine != nullptr) {
 		return true;
@@ -69,6 +78,7 @@ bool ASEngine::ensure_initialized() {
 	engine->SetMessageCallback(asFUNCTION(_message_callback), this, asCALL_CDECL);
 
 	_register_builtins();
+	_initialize_binding();
 	return true;
 }
 
@@ -76,6 +86,17 @@ void ASEngine::_register_builtins() {
 	// 阶段一唯一的内建 API：让端到端验收脚本能调用宿主（spec §5、M1 交付项）。
 	const int result = engine->RegisterGlobalFunction("void as_log_int(int value)", asFUNCTION(_as_log_int), asCALL_GENERIC);
 	ERR_FAIL_COND_MSG(result < 0, vformat("Failed to register the builtin function 'as_log_int' (error %d).", result));
+}
+
+void ASEngine::_initialize_binding() {
+	// 计划构建会读取 angel_script/class_whitelist 与 class_blacklist（默认全放行）。
+	binding_plan.build(ASBindingScope::from_project_settings());
+	ASBindingRegistry::register_plan(binding_plan, engine);
+
+	// as_log_string 的签名用到绑定层的 Godot `String` 值类型，必须等到值类型注册之后
+	// 才能注册（否则 AS 会因未知类型报错并把引擎标记为配置错误且不可恢复）。
+	const int result = engine->RegisterGlobalFunction("void as_log_string(const String &in value)", asFUNCTION(_as_log_string), asCALL_GENERIC);
+	ERR_FAIL_COND_MSG(result < 0, vformat("Failed to register the builtin function 'as_log_string' (error %d).", result));
 }
 
 bool ASEngine::compile_module(const String &p_name, const String &p_source, String *r_error) {

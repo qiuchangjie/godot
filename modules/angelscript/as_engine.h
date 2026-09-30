@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "binding/as_binding_plan.h"
 #include "core/error/error_list.h"
 #include "core/string/ustring.h"
 #include "core/variant/variant.h"
@@ -42,11 +43,15 @@
 class ASEngine {
 	asIScriptEngine *engine = nullptr;
 	String last_error;
+	// 运行期绑定计划：与 --dump-angelscript-api 消费同一份内省结果（spec §3.8.2 方案 A）。
+	ASBindingPlan binding_plan;
 
 	static void _message_callback(const asSMessageInfo *p_msg, void *p_param);
 
 	// 注册阶段一的最小内建 API（当前只有 as_log_int），由 ensure_initialized() 调用一次。
 	void _register_builtins();
+	// 内省 ClassDB 并注册绑定层（值类型 / 对象类型 / 枚举 / @GlobalScope 工具函数）。
+	void _initialize_binding();
 
 public:
 	static ASEngine *get_singleton();
@@ -54,6 +59,9 @@ public:
 	bool ensure_initialized();
 	bool is_initialized() const { return engine != nullptr; }
 	asIScriptEngine *get_engine() const { return engine; }
+
+	// 运行期绑定计划（ensure_initialized() 之后有效）。
+	const ASBindingPlan &get_binding_plan() const { return binding_plan; }
 
 	// 编译一个独立模块；同名模块会被整体替换。失败时把 AngelScript 诊断写入 r_error。
 	bool compile_module(const String &p_name, const String &p_source, String *r_error);

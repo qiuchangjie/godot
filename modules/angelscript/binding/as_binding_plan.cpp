@@ -223,6 +223,17 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		if (pi.usage & (PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP)) {
 			continue;
 		}
+		// 属性名不一定是合法标识符：ClassDB 里存在 "frame_0/texture" 这类仅供检查器
+		// 分组的索引型属性，用它拼出的访问器名（get_frame_0/texture）会被 AS 以
+		// asINVALID_DECLARATION 拒绝，而任何 Register* 失败都会永久污染引擎。
+		if (!String(pi.name).is_valid_identifier()) {
+			ASUnboundEntry e;
+			e.owner = p_class;
+			e.member = String(pi.name);
+			e.reason = "unsupported-property-name: " + String(pi.name);
+			unbound.push_back(e);
+			continue;
+		}
 		ASBindingType t = ASBindingDecl::resolve(pi);
 		if (!t.valid) {
 			ASUnboundEntry e;

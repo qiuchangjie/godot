@@ -30,8 +30,103 @@
 
 #include "as_binding_registry.h"
 
+#include "as_binding_decl.h"
 #include "as_binding_object.h"
 #include "as_binding_value_types.h"
+
+#include "core/object/method_info.h"
+#include "core/os/memory.h"
+#include "core/string/string_name.h"
+#include "core/templates/list.h"
+#include "core/variant/callable.h"
+
+namespace {
+
+// 一个已注册的 @GlobalScope 工具函数的运行期元数据。
+struct ASUtilityBinding {
+	StringName name;
+	Vector<ASBindingKind> param_kinds;
+	ASBindingKind return_kind = AS_KIND_VOID;
+};
+
+void set_exception(const String &p_message) {
+	asIScriptContext *ctx = asGetActiveContext();
+	if (ctx != nullptr) {
+		ctx->SetException(p_message.utf8().get_data());
+	}
+}
+
+// @GlobalScope 工具函数的统一跳板：按 kind 编组实参后交给 Variant::call_utility_function，
+// 与对象方法跳板共用 as_binding_marshal_arg / as_binding_marshal_return。
+void generic_utility_call(asIScriptGeneric *p_gen) {
+	const ASUtilityBinding *binding = (const ASUtilityBinding *)p_gen->GetFunction()->GetUserData();
+	if (binding == nullptr) {
+		set_exception("AngelScript: utility function binding metadata missing");
+		return;
+	}
+
+	const int argc = (int)binding->param_kinds.size();
+	Vector<Variant> args;
+	args.resize(argc);
+	for (int i = 0; i < argc; i++) {
+		args.write[i] = as_binding_marshal_arg(p_gen, i, binding->param_kinds[i]);
+	}
+	Vector<const Variant *> argptrs;
+	argptrs.resize(argc);
+	for (int i = 0; i < argc; i++) {
+		argptrs.write[i] = &args[i];
+	}
+	const Variant **argv = nullptr;
+	if (argc > 0) {
+		argv = argptrs.ptrw();
+	}
+
+	Variant ret;
+	Callable::CallError ce;
+	Variant::call_utility_function(binding->name, &ret, argv, argc, ce);
+	if (ce.error != Callable::CallError::CALL_OK) {
+		set_exception(vformat("AngelScript: %s() failed (%d)", binding->name, (int)ce.error));
+		return;
+	}
+	as_binding_marshal_return(p_gen, binding->return_kind, ret);
+}
+
+// 注册所有“签名可表达”的 @GlobalScope 工具函数。vararg（如 print）或签名里出现
+// Variant 的工具函数（如 clamp）在 M2 无法表达，统一跳过（见 README 的已知限制）。
+// 必须在值类型注册之后调用：签名里会出现 String/Array 等值类型。
+void register_global_functions(asIScriptEngine *p_engine) {
+	List<StringName> names;
+	Variant::get_utility_function_list(&names);
+
+	for (const StringName &name : names) {
+		const MethodInfo info = Variant::get_utility_function_info(name);
+		String decl;
+		String reason;
+		if (!ASBindingDecl::method_to_decl(info, &decl, &reason)) {
+			continue;
+		}
+
+		ASUtilityBinding *binding = memnew(ASUtilityBinding);
+		binding->name = name;
+		binding->return_kind = (info.return_val.type == Variant::NIL) ? AS_KIND_VOID : ASBindingDecl::resolve(info.return_val).kind;
+		for (const PropertyInfo &arg : info.arguments) {
+			binding->param_kinds.push_back(ASBindingDecl::resolve(arg).kind);
+		}
+
+		const CharString decl_utf8 = decl.utf8();
+		const int id = p_engine->RegisterGlobalFunction(decl_utf8.get_data(), asFUNCTION(generic_utility_call), asCALL_GENERIC);
+		if (id < 0) {
+			memdelete(binding);
+			continue;
+		}
+		asIScriptFunction *func = p_engine->GetFunctionById(id);
+		if (func != nullptr) {
+			func->SetUserData(binding);
+		}
+	}
+}
+
+} // namespace
 
 Error ASBindingRegistry::register_plan(const ASBindingPlan &p_plan, asIScriptEngine *p_engine) {
 	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
@@ -52,5 +147,6 @@ Error ASBindingRegistry::register_plan(const ASBindingPlan &p_plan, asIScriptEng
 	}
 
 	ASBindingObject::register_enums(p_plan.get_enums(), p_engine);
+	register_global_functions(p_engine);
 	return OK;
 }

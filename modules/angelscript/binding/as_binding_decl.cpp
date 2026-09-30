@@ -146,6 +146,14 @@ bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, Str
 
 	String ret;
 	if (p_info.return_val.type == Variant::NIL) {
+		// 真正返回 Variant 的方法（property_info 带 NIL_IS_VARIANT）在 M2 没有可编组的
+		// 返回类型：声明成 void 会静默丢弃返回值（半注册），必须整体归为 unbound。
+		if (p_info.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT) {
+			if (r_reason) {
+				*r_reason = "unsupported-return-type: Variant";
+			}
+			return false;
+		}
 		ret = "void";
 	} else {
 		ASBindingType rt = resolve(p_info.return_val);
