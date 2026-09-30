@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_types.h                                                      */
+/*  as_binding_dumper.h                                                   */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,12 +30,21 @@
 
 #pragma once
 
+#include "as_binding_plan.h"
+
+#include "core/error/error_list.h"
 #include "core/string/ustring.h"
-#include "modules/register_module_types.h"
 
-void initialize_angelscript_module(ModuleInitializationLevel p_level);
-void uninitialize_angelscript_module(ModuleInitializationLevel p_level);
+// API 声明转储（spec §3.8.7）：把绑定计划渲染成 `.d.as` 声明文件 + 未绑定清单。
+// 与运行期注册器消费同一份 plan，因此产物里的类型名/枚举名/方法签名与引擎实际注册完全一致。
+class ASBindingDumper {
+	static String _render_declaration(const ASBindingPlan &p_plan);
+	static String _render_unbound(const ASBindingPlan &p_plan);
 
-// `--dump-angelscript-api <dir>` 的入口：把当前 ClassDB 内省成的绑定计划
-// 转储为 .d.as 声明与未绑定清单（main.cpp 在命令行工具模式下调用）。
-void angelscript_dump_api(const String &p_dir);
+public:
+	// 写入 <dir>/angelscript_api.d.as 与 <dir>/angelscript_unbound.txt；目录不存在时递归创建。
+	static Error write(const ASBindingPlan &p_plan, const String &p_dir);
+
+	// 内容 hash（sha256）：热更侧用它判断脚本是否与当前引擎 API 匹配。
+	static String compute_api_version(const ASBindingPlan &p_plan);
+};

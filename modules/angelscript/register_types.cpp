@@ -32,9 +32,12 @@
 
 #include "as_resource_format.h"
 #include "as_script_language.h"
+#include "binding/as_binding_dumper.h"
+#include "binding/as_binding_plan.h"
 
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
+#include "core/os/os.h"
 
 // 本模块的测试用例写在 tests/*.h 里：modules/SCsub 会把它们汇进生成的
 // modules/modules_tests.gen.h，再由 tests/test_main.cpp 统一 include。
@@ -82,4 +85,16 @@ void uninitialize_angelscript_module(ModuleInitializationLevel p_level) {
 		ResourceSaver::remove_resource_format_saver(resource_saver_as);
 		resource_saver_as.unref();
 	}
+}
+
+void angelscript_dump_api(const String &p_dir) {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope::from_project_settings());
+
+	const Error err = ASBindingDumper::write(plan, p_dir);
+	if (err != OK) {
+		ERR_PRINT(vformat("AngelScript: failed to dump API to '%s' (%d).", p_dir, (int)err));
+		return;
+	}
+	OS::get_singleton()->print("AngelScript API dumped to %s\n", p_dir.utf8().get_data());
 }

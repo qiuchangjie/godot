@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_types.h                                                      */
+/*  as_binding_registry.cpp                                               */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,14 +28,29 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#include "as_binding_registry.h"
 
-#include "core/string/ustring.h"
-#include "modules/register_module_types.h"
+#include "as_binding_object.h"
+#include "as_binding_value_types.h"
 
-void initialize_angelscript_module(ModuleInitializationLevel p_level);
-void uninitialize_angelscript_module(ModuleInitializationLevel p_level);
+Error ASBindingRegistry::register_plan(const ASBindingPlan &p_plan, asIScriptEngine *p_engine) {
+	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
 
-// `--dump-angelscript-api <dir>` 的入口：把当前 ClassDB 内省成的绑定计划
-// 转储为 .d.as 声明与未绑定清单（main.cpp 在命令行工具模式下调用）。
-void angelscript_dump_api(const String &p_dir);
+	const Error err = ASBindingValueTypes::register_all(p_engine);
+	if (err != OK) {
+		return err;
+	}
+
+	// 两遍注册：先给所有类建骨架，再挂成员。方法签名会引用其他类，
+	// 一次性逐类注册会让先注册的类因“未知类型”失败，而 AS 里任何一次
+	// Register* 失败都会把引擎标记为配置错误且不可恢复。
+	for (const ASBindingClass &c : p_plan.get_classes()) {
+		ASBindingObject::register_skeleton(c, p_engine);
+	}
+	for (const ASBindingClass &c : p_plan.get_classes()) {
+		ASBindingObject::register_class(c, p_engine);
+	}
+
+	ASBindingObject::register_enums(p_plan.get_enums(), p_engine);
+	return OK;
+}

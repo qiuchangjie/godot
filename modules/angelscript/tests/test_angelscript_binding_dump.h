@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_types.h                                                      */
+/*  test_angelscript_binding_dump.h                                       */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,12 +30,20 @@
 
 #pragma once
 
-#include "core/string/ustring.h"
-#include "modules/register_module_types.h"
+#include "tests/test_macros.h"
 
-void initialize_angelscript_module(ModuleInitializationLevel p_level);
-void uninitialize_angelscript_module(ModuleInitializationLevel p_level);
+// 用例注册头：不得 include 任何 AngelScript 头；实现见 test_angelscript_binding_dump.cpp。
 
-// `--dump-angelscript-api <dir>` 的入口：把当前 ClassDB 内省成的绑定计划
-// 转储为 .d.as 声明与未绑定清单（main.cpp 在命令行工具模式下调用）。
-void angelscript_dump_api(const String &p_dir);
+void as_binding_dump_files_and_determinism();
+void as_binding_dump_content_matches_runtime();
+
+#ifndef ANGELSCRIPT_BINDING_DUMP_TESTS_IMPL
+
+TEST_CASE("[AngelScript] binding dump files and determinism") {
+	as_binding_dump_files_and_determinism();
+}
+TEST_CASE("[AngelScript] binding dump content matches runtime") {
+	as_binding_dump_content_matches_runtime();
+}
+
+#endif // ANGELSCRIPT_BINDING_DUMP_TESTS_IMPL

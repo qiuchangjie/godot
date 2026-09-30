@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_types.h                                                      */
+/*  as_binding_registry.h                                                 */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,12 +30,17 @@
 
 #pragma once
 
-#include "core/string/ustring.h"
-#include "modules/register_module_types.h"
+#include "as_binding_plan.h"
 
-void initialize_angelscript_module(ModuleInitializationLevel p_level);
-void uninitialize_angelscript_module(ModuleInitializationLevel p_level);
+#include "core/error/error_list.h"
 
-// `--dump-angelscript-api <dir>` 的入口：把当前 ClassDB 内省成的绑定计划
-// 转储为 .d.as 声明与未绑定清单（main.cpp 在命令行工具模式下调用）。
-void angelscript_dump_api(const String &p_dir);
+#include <angelscript.h>
+
+// 绑定计划 → AS 引擎的唯一注册入口（spec §3.8.2 方案 A）。
+// 运行期注册与 .d.as dump 消费同一份 plan，避免两边各写一套内省逻辑而漂移。
+class ASBindingRegistry {
+public:
+	// 顺序是硬约束：值类型 → 全部对象骨架 → 全部对象成员 → 枚举。
+	// 方法签名会跨类引用，所以骨架必须先行；AS 里任何一次 Register* 失败都会永久污染引擎。
+	static Error register_plan(const ASBindingPlan &p_plan, asIScriptEngine *p_engine);
+};
