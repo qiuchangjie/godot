@@ -1,0 +1,374 @@
+#include "as_binding_object.h"
+
+#include "as_binding_decl.h"
+#include "core/object/class_db.h"
+#include "core/object/ref_counted.h"
+#include "core/os/memory.h"
+#include "core/string/string_name.h"
+#include "core/templates/hash_set.h"
+#include "core/variant/callable.h"
+
+namespace {
+
+// 跳板运行时要靠“成员是谁”来转发调用，这些记录以泄漏式堆对象挂在
+// asIScriptFunction::userdata 上：注册只在启动时发生一次，生命周期与引擎一致，不做回收。
+struct ASObjectBinding {
+	enum Kind {
+		KIND_METHOD,
+		KIND_PROPERTY_GET,
+		KIND_PROPERTY_SET,
+	};
+	Kind kind = KIND_METHOD;
+	StringName member;
+	MethodBind *bind = nullptr;
+	Vector<ASBindingKind> param_kinds;
+	ASBindingKind return_kind = AS_KIND_VOID;
+};
+
+struct ASObjectFactoryBinding {
+	StringName class_name;
+};
+
+// RegisterGlobalProperty 要求存储地址一直有效到引擎销毁，所以用 memnew 泄漏，
+// 不能把 HashMap 里的值取址（rehash 会让地址失效）。
+HashSet<StringName> g_global_names;
+// register_class 幂等：重复挂同一个类的成员会以 asNAME_TAKEN 污染引擎。
+HashSet<StringName> g_registered_classes;
+
+void set_exception(const String &p_message) {
+	asIScriptContext *ctx = asGetActiveContext();
+	if (ctx) {
+		CharString msg = p_message.utf8();
+		ctx->SetException(msg.get_data());
+	}
+}
+
+void attach_binding(asIScriptEngine *p_engine, int p_id, void *p_userdata) {
+	if (p_id < 0 || p_userdata == nullptr) {
+		return;
+	}
+	asIScriptFunction *f = p_engine->GetFunctionById(p_id);
+	if (f) {
+		f->SetUserData(p_userdata);
+	}
+}
+
+ASObjectBinding *get_binding(asIScriptGeneric *p_gen, ASObjectBinding::Kind p_expected) {
+	asIScriptFunction *f = p_gen->GetFunction();
+	ASObjectBinding *b = f ? static_cast<ASObjectBinding *>(f->GetUserData()) : nullptr;
+	if (b == nullptr || b->kind != p_expected) {
+		set_exception("AngelScript: binding metadata missing");
+		return nullptr;
+	}
+	return b;
+}
+
+// 属性在 plan 里只存了 AS 侧类型字符串，这里反推 marshal kind。
+ASBindingKind kind_of_as_type(const String &p_as_type) {
+	if (p_as_type == "bool") {
+		return AS_KIND_BOOL;
+	}
+	if (p_as_type == "int64") {
+		return AS_KIND_INT64;
+	}
+	if (p_as_type == "double") {
+		return AS_KIND_DOUBLE;
+	}
+	if (p_as_type.ends_with("@")) {
+		return AS_KIND_OBJECT;
+	}
+	return AS_KIND_VALUE;
+}
+
+} // namespace
+
+Error ASBindingObject::register_skeleton(const ASBindingClass &p_class, asIScriptEngine *p_engine) {
+	ERR_FAIL_COND_V(p_engine == nullptr, ERR_INVALID_PARAMETER);
+
+	const CharString cname = String(p_class.name).utf8();
+	// 值类型（T3 注册的 Vector2/Array/...）优先占名；同名说明 plan 与值类型表冲突，跳过即可，
+	// 不能重复注册：RegisterObjectType 失败会给引擎置上 configFailed。
+	if (p_engine->GetTypeInfoByName(cname.get_data()) != nullptr) {
+		return OK;
+	}
+
+	if (p_engine->RegisterObjectType(cname.get_data(), 0, asOBJ_REF) < 0) {
+		ERR_PRINT(vformat("AngelScript: RegisterObjectType('%s') failed", p_class.name));
+		return ERR_CANT_CREATE;
+	}
+
+	// addref/release 对非 RefCounted（如 Node）是空操作：普通节点不该被脚本计数，
+	// 而且脚本里 free() 之后句柄还在，空操作跳板不会去碰已释放的内存。
+	// （把 RefCounted 赋给非 RefCounted 祖先类型的句柄，如 `Object @o = res;`，当前不会补引用，
+	// 这会漏掉一份引用；M2 记录为已知限制，留待 M3 用 ObjectID 做动态校验。）
+	const bool refcounted = ClassDB::is_parent_class(p_class.name, "RefCounted");
+	asSFuncPtr addref_fn = refcounted ? asFUNCTION(generic_addref) : asFUNCTION(generic_addref_noop);
+	asSFuncPtr release_fn = refcounted ? asFUNCTION(generic_release) : asFUNCTION(generic_release_noop);
+	p_engine->RegisterObjectBehaviour(cname.get_data(), asBEHAVE_ADDREF, "void f()", addref_fn, asCALL_GENERIC);
+	p_engine->RegisterObjectBehaviour(cname.get_data(), asBEHAVE_RELEASE, "void f()", release_fn, asCALL_GENERIC);
+
+	if (p_class.instantiable) {
+		ASObjectFactoryBinding *fb = memnew(ASObjectFactoryBinding);
+		fb->class_name = p_class.name;
+		const String decl = String(p_class.name) + "@ f()";
+		const CharString cdecl_utf8 = decl.utf8();
+		attach_binding(p_engine, p_engine->RegisterObjectBehaviour(cname.get_data(), asBEHAVE_FACTORY, cdecl_utf8.get_data(), asFUNCTION(generic_instantiate), asCALL_GENERIC), fb);
+	}
+
+	return OK;
+}
+
+Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEngine *p_engine) {
+	ERR_FAIL_COND_V(p_engine == nullptr, ERR_INVALID_PARAMETER);
+
+	const CharString cname = String(p_class.name).utf8();
+	asITypeInfo *ti = p_engine->GetTypeInfoByName(cname.get_data());
+	if (ti == nullptr) {
+		// 骨架没建起来（不可见或与值类型同名），成员自然也无从挂载。
+		return ERR_DOES_NOT_EXIST;
+	}
+	if (g_registered_classes.has(p_class.name)) {
+		return OK;
+	}
+	g_registered_classes.insert(p_class.name);
+
+	for (const ASBindingMethod &m : p_class.methods) {
+		if (m.bind == nullptr || m.is_static) {
+			continue;
+		}
+		ASObjectBinding *b = memnew(ASObjectBinding);
+		b->kind = ASObjectBinding::KIND_METHOD;
+		b->member = m.name;
+		b->bind = m.bind;
+		b->param_kinds = m.param_kinds;
+		b->return_kind = m.return_kind;
+		const CharString decl = m.as_decl.utf8();
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), decl.get_data(), asFUNCTION(generic_method_call), asCALL_GENERIC), b);
+	}
+
+	for (const ASBindingProperty &p : p_class.properties) {
+		const String getter = "get_" + p.name;
+		const String setter = "set_" + p.name;
+		const CharString cgetter = getter.utf8();
+		const CharString csetter = setter.utf8();
+		// 与方法（或基类访问器）重名时跳过：asNAME_TAKEN 同样会永久污染引擎。
+		if (ti->GetMethodByName(cgetter.get_data()) != nullptr) {
+			continue;
+		}
+		if (!p.read_only && ti->GetMethodByName(csetter.get_data()) != nullptr) {
+			continue;
+		}
+
+		const String gdecl = p.as_type + " " + getter + "() const property";
+		const CharString cgdecl = gdecl.utf8();
+		ASObjectBinding *gb = memnew(ASObjectBinding);
+		gb->kind = ASObjectBinding::KIND_PROPERTY_GET;
+		gb->member = p.name;
+		gb->return_kind = kind_of_as_type(p.as_type);
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cgdecl.get_data(), asFUNCTION(generic_property_get), asCALL_GENERIC), gb);
+
+		if (p.read_only) {
+			continue;
+		}
+		// setter 的形参必须与 getter 返回类型一致（AS 校验 virtual property 的规则）。
+		const String sdecl = "void " + setter + "(" + as_binding_render_param(p.as_type) + ") property";
+		const CharString csdecl = sdecl.utf8();
+		ASObjectBinding *sb = memnew(ASObjectBinding);
+		sb->kind = ASObjectBinding::KIND_PROPERTY_SET;
+		sb->member = p.name;
+		sb->param_kinds.push_back(kind_of_as_type(p.as_type));
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), csdecl.get_data(), asFUNCTION(generic_property_set), asCALL_GENERIC), sb);
+	}
+
+	for (const ASBindingConstant &c : p_class.constants) {
+		const String gname = String(p_class.name) + "_" + c.name;
+		if (g_global_names.has(gname)) {
+			continue;
+		}
+		const CharString cgname = gname.utf8();
+		if (p_engine->GetGlobalPropertyIndexByName(cgname.get_data()) >= 0) {
+			continue;
+		}
+		int64_t *storage = memnew(int64_t);
+		*storage = c.value;
+		const String decl = "const int64 " + gname;
+		const CharString cdecl_utf8 = decl.utf8();
+		if (p_engine->RegisterGlobalProperty(cdecl_utf8.get_data(), storage) < 0) {
+			memdelete(storage);
+			continue;
+		}
+		g_global_names.insert(gname);
+	}
+
+	// 继承边：AS 不做跨级隐式转换，因此对每个已注册祖先各注册一条 opImplCast。
+	StringName ancestor = p_class.parent;
+	while (!ancestor.is_empty()) {
+		const CharString ancestor_data = String(ancestor).utf8();
+		if (p_engine->GetTypeInfoByName(ancestor_data.get_data()) == nullptr) {
+			break;
+		}
+		const String decl = String(ancestor) + "@ opImplCast() const";
+		const CharString cdecl_utf8 = decl.utf8();
+		p_engine->RegisterObjectMethod(cname.get_data(), cdecl_utf8.get_data(), asFUNCTION(generic_upcast), asCALL_GENERIC);
+		ancestor = ClassDB::get_parent_class_nocheck(ancestor);
+	}
+
+	return OK;
+}
+
+Error ASBindingObject::register_enums(const Vector<ASBindingEnum> &p_enums, asIScriptEngine *p_engine) {
+	ERR_FAIL_COND_V(p_engine == nullptr, ERR_INVALID_PARAMETER);
+
+	for (const ASBindingEnum &e : p_enums) {
+		// ClassDB 只给出裸枚举名（如 "ProcessMode"），不同类会重名；AS 侧一律用
+		// "<声明类>_<枚举名>" 限定，同时把枚举名里可能出现的 '.' 净化成 '_'。
+		const String ename = (String(e.scope) + "_" + String(e.name)).replace(".", "_");
+		if (ename.is_empty() || g_global_names.has(ename)) {
+			continue;
+		}
+		const CharString cename = ename.utf8();
+		if (p_engine->GetTypeInfoByName(cename.get_data()) != nullptr) {
+			continue;
+		}
+
+		// RegisterEnumValue 只接受 int32：越界值直接丢弃，不留半截枚举。
+		Vector<Pair<String, int64_t>> kept;
+		for (const Pair<String, int64_t> &v : e.values) {
+			if (v.second >= INT32_MIN && v.second <= INT32_MAX) {
+				kept.push_back(v);
+			}
+		}
+		if (kept.is_empty()) {
+			continue;
+		}
+
+		if (p_engine->RegisterEnum(cename.get_data()) < 0) {
+			continue;
+		}
+		g_global_names.insert(ename);
+		for (const Pair<String, int64_t> &v : kept) {
+			const CharString cval = v.first.utf8();
+			p_engine->RegisterEnumValue(cename.get_data(), cval.get_data(), (int)v.second);
+		}
+	}
+
+	return OK;
+}
+
+void ASBindingObject::generic_method_call(asIScriptGeneric *p_gen) {
+	ASObjectBinding *b = get_binding(p_gen, ASObjectBinding::KIND_METHOD);
+	if (b == nullptr) {
+		return;
+	}
+	Object *self = (Object *)p_gen->GetObject();
+	if (self == nullptr) {
+		set_exception("AngelScript: null instance");
+		return;
+	}
+
+	const int argc = b->param_kinds.size();
+	Vector<Variant> args;
+	args.resize(argc);
+	for (int i = 0; i < argc; i++) {
+		args.write[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i]);
+	}
+	// MethodBind 要的是“Variant 指针数组”，不能把 Vector<Variant> 强转成指针数组。
+	Vector<const Variant *> argptrs;
+	argptrs.resize(argc);
+	for (int i = 0; i < argc; i++) {
+		argptrs.write[i] = &args[i];
+	}
+
+	Callable::CallError ce;
+	const Variant **argv = nullptr;
+	if (argc > 0) {
+		argv = argptrs.ptrw();
+	}
+	Variant ret = b->bind->call(self, argv, argc, ce);
+	if (ce.error != Callable::CallError::CALL_OK) {
+		set_exception(vformat("AngelScript: %s() failed (%d)", b->member, (int)ce.error));
+		return;
+	}
+	as_binding_marshal_return(p_gen, b->return_kind, ret);
+}
+
+void ASBindingObject::generic_property_get(asIScriptGeneric *p_gen) {
+	ASObjectBinding *b = get_binding(p_gen, ASObjectBinding::KIND_PROPERTY_GET);
+	if (b == nullptr) {
+		return;
+	}
+	Object *self = (Object *)p_gen->GetObject();
+	if (self == nullptr) {
+		set_exception("AngelScript: null instance");
+		return;
+	}
+	bool valid = false;
+	Variant v = self->get(b->member, &valid);
+	if (!valid) {
+		set_exception(vformat("AngelScript: property '%s' is not readable", b->member));
+		return;
+	}
+	as_binding_marshal_return(p_gen, b->return_kind, v);
+}
+
+void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
+	ASObjectBinding *b = get_binding(p_gen, ASObjectBinding::KIND_PROPERTY_SET);
+	if (b == nullptr) {
+		return;
+	}
+	Object *self = (Object *)p_gen->GetObject();
+	if (self == nullptr) {
+		set_exception("AngelScript: null instance");
+		return;
+	}
+	Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
+	bool valid = false;
+	self->set(b->member, v, &valid);
+	if (!valid) {
+		set_exception(vformat("AngelScript: property '%s' is not writable", b->member));
+	}
+}
+
+void ASBindingObject::generic_instantiate(asIScriptGeneric *p_gen) {
+	asIScriptFunction *f = p_gen->GetFunction();
+	ASObjectFactoryBinding *fb = f ? static_cast<ASObjectFactoryBinding *>(f->GetUserData()) : nullptr;
+	if (fb == nullptr) {
+		set_exception("AngelScript: factory metadata missing");
+		return;
+	}
+	Object *o = ClassDB::instantiate(fb->class_name);
+	if (o == nullptr) {
+		set_exception(vformat("AngelScript: cannot instantiate '%s'", fb->class_name));
+		return;
+	}
+	// instantiate 自带一份 RefCounted 的“创建者引用”，SetReturnObject 的 addref 会通过
+	// RefCounted::init_ref 接管它，因此这里既不能额外 reference 也不能 deinit_ref。
+	p_gen->SetReturnObject(o);
+}
+
+void ASBindingObject::generic_addref(asIScriptGeneric *p_gen) {
+	RefCounted *rc = static_cast<RefCounted *>((Object *)p_gen->GetObject());
+	if (rc) {
+		rc->init_ref();
+	}
+}
+
+void ASBindingObject::generic_release(asIScriptGeneric *p_gen) {
+	RefCounted *rc = static_cast<RefCounted *>((Object *)p_gen->GetObject());
+	if (rc) {
+		rc->unreference();
+	}
+}
+
+void ASBindingObject::generic_addref_noop(asIScriptGeneric *p_gen) {
+	// 有意留空：非 RefCounted 对象不参与脚本引用计数。
+}
+
+void ASBindingObject::generic_release_noop(asIScriptGeneric *p_gen) {
+	// 有意留空：句柄可能指向已被 free() 的对象，这里绝不能解引用。
+}
+
+void ASBindingObject::generic_upcast(asIScriptGeneric *p_gen) {
+	// 借 SetReturnObject 自己的 addref 交付一份引用，正好由接收变量接管。
+	p_gen->SetReturnObject(p_gen->GetObject());
+}

@@ -93,6 +93,14 @@ void as_binding_decl_method_forms() {
 	add.flags = METHOD_FLAG_NORMAL;
 	CHECK(ASBindingDecl::method_to_decl(add, &decl, &reason));
 	CHECK(decl == "void add_child(Node@)");
+
+	// AS 2.38 无 static 关键字：静态方法必须整体归为 unbound，且声明里不得出现 "static"。
+	MethodInfo stat;
+	stat.name = "get_singleton";
+	stat.return_val = make_pi(Variant::OBJECT, "Node");
+	stat.flags = METHOD_FLAG_STATIC;
+	CHECK_FALSE(ASBindingDecl::method_to_decl(stat, &decl, &reason));
+	CHECK(reason == "static-method");
 }
 
 void as_binding_decl_rejects_vararg_and_unknown() {

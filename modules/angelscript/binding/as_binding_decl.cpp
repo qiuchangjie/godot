@@ -135,6 +135,15 @@ bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, Str
 		return false;
 	}
 
+	// AS 2.38 的解析器不识别 `static` 关键字：把 "static ..." 交给 RegisterObjectMethod
+	// 会返回 asINVALID_DECLARATION 并永久污染引擎（探针验证）。M2 一律不绑定静态方法。
+	if (p_info.flags & METHOD_FLAG_STATIC) {
+		if (r_reason) {
+			*r_reason = "static-method";
+		}
+		return false;
+	}
+
 	String ret;
 	if (p_info.return_val.type == Variant::NIL) {
 		ret = "void";
@@ -165,9 +174,6 @@ bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, Str
 	}
 
 	String decl;
-	if (p_info.flags & METHOD_FLAG_STATIC) {
-		decl += "static ";
-	}
 	decl += ret + " " + p_info.name + "(" + args + ")";
 	if (p_info.flags & METHOD_FLAG_CONST) {
 		decl += " const";

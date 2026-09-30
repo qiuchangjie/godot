@@ -198,6 +198,16 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		m.name = String(mi.name);
 		m.as_decl = decl;
 		m.bind = ClassDB::get_method(p_class, mi.name);
+		// 虚拟方法（GDVIRTUAL）只有 MethodInfo 没有 MethodBind：AS 侧注册出来也调不到实现，
+		// 归入 unbound，保证 plan 与运行期注册、dump 三者一致。
+		if (m.bind == nullptr) {
+			ASUnboundEntry e;
+			e.owner = p_class;
+			e.member = String(mi.name);
+			e.reason = "virtual";
+			unbound.push_back(e);
+			continue;
+		}
 		m.is_static = (mi.flags & METHOD_FLAG_STATIC);
 		m.return_kind = (mi.return_val.type == Variant::NIL) ? AS_KIND_VOID : ASBindingDecl::resolve(mi.return_val).kind;
 		for (const PropertyInfo &pi : mi.arguments) {
@@ -219,6 +229,17 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 			e.owner = p_class;
 			e.member = String(pi.name);
 			e.reason = "unsupported-property-type: " + t.unbound_reason;
+			unbound.push_back(e);
+			continue;
+		}
+		// 与方法的 refs_invisible 同理：引用不可见类的属性在 AS 侧注册会因未知类型而失败
+		// （而任何 Register* 失败都会永久污染引擎），必须一并在 plan 阶段过滤。
+		String bad;
+		if (refs_invisible(pi, &bad)) {
+			ASUnboundEntry e;
+			e.owner = p_class;
+			e.member = String(pi.name);
+			e.reason = "references-invisible-type: " + bad;
 			unbound.push_back(e);
 			continue;
 		}
