@@ -36,11 +36,16 @@
 // M3 的 PR-1 各任务（Task 1/4/5/6）在同一文件内追加用例，共享同一个 impl 文件与 guard。
 
 void as_m3_nonowning_id_slot_probe();
+void as_m3_property_kind_from_static_type();
 
 #ifndef ANGELSCRIPT_M3_HANDLE_TESTS_IMPL
 
 TEST_CASE("[AngelScript][M3] non-owning handle stores ObjectID") {
 	as_m3_nonowning_id_slot_probe();
+}
+
+TEST_CASE("[AngelScript][M3] property kind follows static type") {
+	as_m3_property_kind_from_static_type();
 }
 
 #endif // ANGELSCRIPT_M3_HANDLE_TESTS_IMPL

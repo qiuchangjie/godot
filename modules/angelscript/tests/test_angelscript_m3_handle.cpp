@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "../as_engine.h"
+#include "../binding/as_binding_decl.h"
 #include "../binding/as_binding_object.h"
 #include "../binding/as_binding_plan.h"
 #include "../binding/as_binding_value_types.h"
@@ -176,4 +177,34 @@ void as_m3_nonowning_id_slot_probe() {
 	INFO("stale error: ", err);
 	REQUIRE(stale_ok);
 	CHECK(out == 1);
+}
+
+// spec §0 R3：句柄的拥有/非拥有语义由**静态类型**决定 ——
+// 派生自 RefCounted 的类型其槽里是裸指针（由 AS 的 addref/release 保活），
+// 其余类型（含 Object 自身）槽里是 ObjectID，需要在解引用时经 ObjectDB 校验。
+void as_m3_property_kind_from_static_type() {
+	PropertyInfo pi;
+	pi.name = "value";
+
+	// Node 不是 RefCounted ⇒ 非拥有（弱引用）。
+	pi.type = Variant::OBJECT;
+	pi.class_name = "Node";
+	ASBindingType t = ASBindingDecl::resolve(pi);
+	REQUIRE(t.valid);
+	CHECK(t.kind == AS_KIND_OBJECT_NONOWNING);
+	CHECK(t.as_name == "Node@");
+
+	// Resource 派生自 RefCounted ⇒ 拥有（强引用）。
+	pi.class_name = "Resource";
+	t = ASBindingDecl::resolve(pi);
+	REQUIRE(t.valid);
+	CHECK(t.kind == AS_KIND_OBJECT_OWNING);
+	CHECK(t.as_name == "Resource@");
+
+	// 空 class_name 表示“任意 Object”；Object 自身不是 RefCounted ⇒ 非拥有。
+	pi.class_name = StringName();
+	t = ASBindingDecl::resolve(pi);
+	REQUIRE(t.valid);
+	CHECK(t.kind == AS_KIND_OBJECT_NONOWNING);
+	CHECK(t.as_name == "Object@");
 }

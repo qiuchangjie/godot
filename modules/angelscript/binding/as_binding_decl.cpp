@@ -30,6 +30,8 @@
 
 #include "as_binding_decl.h"
 
+#include "core/object/class_db.h"
+
 #include <angelscript.h>
 
 String ASBindingDecl::variant_type_to_as(Variant::Type p_type) {
@@ -80,9 +82,12 @@ String ASBindingDecl::variant_type_to_as(Variant::Type p_type) {
 ASBindingType ASBindingDecl::resolve(const PropertyInfo &p_info) {
 	ASBindingType out;
 	if (p_info.type == Variant::OBJECT) {
+		const StringName cls = p_info.class_name;
+		// 空 class_name 表示“任意 Object”；Object 自身不是 RefCounted ⇒ 归为非拥有。
+		const bool owning = cls != StringName() && ClassDB::is_parent_class(cls, "RefCounted");
 		out.valid = true;
-		out.kind = AS_KIND_OBJECT;
-		out.as_name = String(p_info.class_name.is_empty() ? StringName("Object") : p_info.class_name) + "@";
+		out.as_name = String(cls == StringName() ? StringName("Object") : cls) + "@";
+		out.kind = owning ? AS_KIND_OBJECT_OWNING : AS_KIND_OBJECT_NONOWNING;
 		return out;
 	}
 	String as = variant_type_to_as(p_info.type);
@@ -206,7 +211,10 @@ Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKi
 			void *p = p_gen->GetArgObject(p_index);
 			return p ? *(const Variant *)p : Variant();
 		}
-		case AS_KIND_OBJECT:
+		case AS_KIND_OBJECT_OWNING:
+		case AS_KIND_OBJECT_NONOWNING:
+			// Task 2 保持 M2 行为：槽里就是 Object*。
+			// Task 3 会把 NONOWNING 换成经 as_handle_decode 的 ObjectID 解码。
 			return Variant((Object *)p_gen->GetArgObject(p_index));
 		default:
 			return Variant();
@@ -228,7 +236,9 @@ void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, co
 			// 值类型按值返回：交给 AS 用注册的拷贝构造写进返回槽。
 			p_gen->SetReturnObject((void *)&p_value);
 			break;
-		case AS_KIND_OBJECT:
+		case AS_KIND_OBJECT_OWNING:
+		case AS_KIND_OBJECT_NONOWNING:
+			// Task 2 保持 M2 行为（裸指针）；Task 3 换成 as_handle_encode。
 			p_gen->SetReturnObject((void *)p_value.operator Object *());
 			break;
 		default:

@@ -45,7 +45,11 @@ enum ASBindingKind {
 	AS_KIND_INT64,
 	AS_KIND_DOUBLE,
 	AS_KIND_VALUE,
-	AS_KIND_OBJECT,
+	// 对象句柄按**静态类型**分成两类（spec §0 R3）：
+	//   OWNING    —— 静态类型派生自 RefCounted：槽里是裸 Object*，引用计数由 AS 的 addref/release 维护。
+	//   NONOWNING —— 其余（含 Object 自身）：槽里是 ObjectID，每次解引用都必须经 ObjectDB 校验。
+	AS_KIND_OBJECT_OWNING,
+	AS_KIND_OBJECT_NONOWNING,
 };
 
 struct ASBindingType {

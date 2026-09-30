@@ -56,7 +56,7 @@ void as_binding_decl_scalar_mapping() {
 	CHECK(ASBindingDecl::resolve(make_pi(Variant::INT)).kind == AS_KIND_INT64);
 	CHECK(ASBindingDecl::resolve(make_pi(Variant::FLOAT)).kind == AS_KIND_DOUBLE);
 	CHECK(ASBindingDecl::resolve(make_pi(Variant::VECTOR2)).kind == AS_KIND_VALUE);
-	CHECK(ASBindingDecl::resolve(make_pi(Variant::OBJECT, "Node")).kind == AS_KIND_OBJECT);
+	CHECK(ASBindingDecl::resolve(make_pi(Variant::OBJECT, "Node")).kind == AS_KIND_OBJECT_NONOWNING);
 }
 
 void as_binding_decl_object_and_enum() {

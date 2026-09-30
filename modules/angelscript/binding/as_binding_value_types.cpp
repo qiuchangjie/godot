@@ -187,7 +187,9 @@ static ASBindingKind kind_of_type(Variant::Type p_type) {
 		case Variant::FLOAT:
 			return AS_KIND_DOUBLE;
 		case Variant::OBJECT:
-			return AS_KIND_OBJECT;
+			// 值类型方法没有静态 class_name 可用（且 variant_type_to_as 不处理 OBJECT，
+			// 这类签名在 render_args 阶段就会被拒绝），此处仅为防御性填充：按“任意 Object”= 非拥有。
+			return AS_KIND_OBJECT_NONOWNING;
 		default:
 			return AS_KIND_VALUE; // NIL(Variant) 与全部内建值类型统一走 Variant 存储。
 	}

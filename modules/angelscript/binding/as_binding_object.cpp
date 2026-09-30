@@ -63,23 +63,6 @@ ASObjectBinding *get_binding(asIScriptGeneric *p_gen, ASObjectBinding::Kind p_ex
 	return b;
 }
 
-// 属性在 plan 里只存了 AS 侧类型字符串，这里反推 marshal kind。
-ASBindingKind kind_of_as_type(const String &p_as_type) {
-	if (p_as_type == "bool") {
-		return AS_KIND_BOOL;
-	}
-	if (p_as_type == "int64") {
-		return AS_KIND_INT64;
-	}
-	if (p_as_type == "double") {
-		return AS_KIND_DOUBLE;
-	}
-	if (p_as_type.ends_with("@")) {
-		return AS_KIND_OBJECT;
-	}
-	return AS_KIND_VALUE;
-}
-
 } // namespace
 
 Error ASBindingObject::register_skeleton(const ASBindingClass &p_class, asIScriptEngine *p_engine) {
@@ -169,7 +152,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		ASObjectBinding *gb = memnew(ASObjectBinding);
 		gb->kind = ASObjectBinding::KIND_PROPERTY_GET;
 		gb->member = p.name;
-		gb->return_kind = kind_of_as_type(p.as_type);
+		gb->return_kind = p.kind;
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cgdecl.get_data(), asFUNCTION(generic_property_get), asCALL_GENERIC), gb);
 
 		if (p.read_only) {
@@ -181,7 +164,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		ASObjectBinding *sb = memnew(ASObjectBinding);
 		sb->kind = ASObjectBinding::KIND_PROPERTY_SET;
 		sb->member = p.name;
-		sb->param_kinds.push_back(kind_of_as_type(p.as_type));
+		sb->param_kinds.push_back(p.kind);
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), csdecl.get_data(), asFUNCTION(generic_property_set), asCALL_GENERIC), sb);
 	}
 

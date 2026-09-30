@@ -52,6 +52,8 @@ struct ASBindingMethod {
 struct ASBindingProperty {
 	String name;
 	String as_type;
+	// 供 as_binding_object.cpp 直接使用，避免再从 as_type 字符串反推 marshal kind。
+	ASBindingKind kind = AS_KIND_VOID;
 	bool read_only = false;
 };
 

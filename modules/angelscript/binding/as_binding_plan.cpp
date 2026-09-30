@@ -257,6 +257,7 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		ASBindingProperty bp;
 		bp.name = String(pi.name);
 		bp.as_type = t.as_name;
+		bp.kind = t.kind;
 		bp.read_only = (pi.usage & PROPERTY_USAGE_READ_ONLY);
 		c.properties.push_back(bp);
 	}
@@ -319,7 +320,7 @@ String ASBindingPlan::serialize_stable() const {
 			lines.push_back("m:" + String(c.name) + ":" + m.as_decl);
 		}
 		for (const ASBindingProperty &p : c.properties) {
-			lines.push_back("p:" + String(c.name) + ":" + p.name + ":" + p.as_type + (p.read_only ? ":ro" : ""));
+			lines.push_back("p:" + String(c.name) + ":" + p.name + ":" + p.as_type + ":" + itos((int)p.kind) + (p.read_only ? ":ro" : ""));
 		}
 		for (const ASBindingConstant &k : c.constants) {
 			lines.push_back("k:" + String(c.name) + ":" + k.name + "=" + itos(k.value));
