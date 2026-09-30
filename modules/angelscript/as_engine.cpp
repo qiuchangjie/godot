@@ -134,3 +134,89 @@ void ASEngine::shutdown() {
 	engine = nullptr;
 	last_error = String();
 }
+
+Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret) {
+	ERR_FAIL_NULL_V(p_context, ERR_INVALID_PARAMETER);
+	ERR_FAIL_NULL_V(p_func, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_argc != (int)p_func->GetParamCount(), ERR_INVALID_PARAMETER);
+
+	if (p_context->Prepare(p_func) < 0) {
+		return ERR_CANT_CREATE;
+	}
+	if (p_object != nullptr) {
+		p_context->SetObject(p_object);
+	}
+
+	for (int i = 0; i < p_argc; i++) {
+		const Variant &arg = *p_args[i];
+		// AS 的 SetArg* 会校验形参在栈上的宽度（SetArgQWord 只接受 8 字节形参，
+		// 对 32 位 int 会返回 asINVALID_TYPE 并把上下文置为错误态；SetArgFloat/
+		// SetArgDouble 分别是 4/8 字节），所以按形参类型 id 选择赋值函数，
+		// 而不是只看 Variant 类型，并且必须检查返回值。
+		int set_result = asSUCCESS;
+		switch (arg.get_type()) {
+			case Variant::BOOL:
+				set_result = p_context->SetArgByte(i, arg.operator bool() ? 1 : 0);
+				break;
+			case Variant::INT: {
+				int param_type_id = asTYPEID_VOID;
+				p_func->GetParam(i, &param_type_id);
+				if (param_type_id == asTYPEID_INT64 || param_type_id == asTYPEID_UINT64) {
+					set_result = p_context->SetArgQWord(i, (asQWORD)arg.operator int64_t());
+				} else {
+					set_result = p_context->SetArgDWord(i, (asDWORD)(int32_t)arg.operator int64_t());
+				}
+			} break;
+			case Variant::FLOAT: {
+				int param_type_id = asTYPEID_VOID;
+				p_func->GetParam(i, &param_type_id);
+				if (param_type_id == asTYPEID_FLOAT) {
+					set_result = p_context->SetArgFloat(i, (float)arg.operator double());
+				} else {
+					set_result = p_context->SetArgDouble(i, arg.operator double());
+				}
+			} break;
+			default:
+				// 对象/字符串等参数类型留待绑定层（M2）。
+				p_context->Unprepare();
+				return ERR_INVALID_PARAMETER;
+		}
+		if (set_result < 0) {
+			p_context->Unprepare();
+			return ERR_INVALID_PARAMETER;
+		}
+	}
+
+	if (p_context->Execute() != asEXECUTION_FINISHED) {
+		p_context->Unprepare();
+		return FAILED;
+	}
+
+	if (r_ret != nullptr) {
+		switch (p_func->GetReturnTypeId()) {
+			case asTYPEID_VOID:
+				*r_ret = Variant();
+				break;
+			case asTYPEID_BOOL:
+				*r_ret = Variant(p_context->GetReturnByte() != 0);
+				break;
+			case asTYPEID_INT32:
+				// 32 位返回值必须走 GetReturnDWord：QWord 高位未定义，负数会被读成大正数。
+				*r_ret = Variant((int64_t)(int32_t)p_context->GetReturnDWord());
+				break;
+			case asTYPEID_INT64:
+				*r_ret = Variant((int64_t)p_context->GetReturnQWord());
+				break;
+			case asTYPEID_FLOAT:
+			case asTYPEID_DOUBLE:
+				*r_ret = Variant(p_context->GetReturnDouble());
+				break;
+			default:
+				*r_ret = Variant();
+				break;
+		}
+	}
+
+	p_context->Unprepare();
+	return OK;
+}

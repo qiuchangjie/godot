@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  as_engine.h                                                           */
+/*  as_script_instance.h                                                  */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,37 +30,41 @@
 
 #pragma once
 
-#include "core/error/error_list.h"
-#include "core/string/ustring.h"
-#include "core/variant/variant.h"
+#include "as_script.h"
+
+#include "core/object/script_instance.h"
 
 #include <angelscript.h>
 
-// AngelScript 引擎的唯一持有者：负责生命周期、模块编译与函数执行。
-// 主线程独占（spec §4）；ScriptServer::init_languages() 在 --test / headless 路径下
-// 不会被调用，因此这里采用懒初始化。
-class ASEngine {
-	asIScriptEngine *engine = nullptr;
-	String last_error;
+// 脚本实例：持有 AS 侧对象句柄（object）与一个专用执行上下文（context）。
+// 引擎回调 _ready/_enter_tree/_exit_tree/_process/_physics_process 由 Node 的
+// GDVIRTUAL 经 has_method()/callp() 按名字派发（scene/main/node.h:433-437），
+// notification() 只负责 _notification(int)，与 gdscript 的处理一致。
+class ASScriptInstance : public ScriptInstance {
+	Object *owner = nullptr;
+	Ref<ASScript> script;
+	asIScriptObject *object = nullptr;
+	asIScriptContext *context = nullptr;
 
-	static void _message_callback(const asSMessageInfo *p_msg, void *p_param);
+	int _find_property(const StringName &p_name, int *r_type_id = nullptr) const;
+	static int _expected_param_count(const StringName &p_method);
 
 public:
-	static ASEngine *get_singleton();
+	ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owner);
+	virtual ~ASScriptInstance() override;
 
-	bool ensure_initialized();
-	bool is_initialized() const { return engine != nullptr; }
-	asIScriptEngine *get_engine() const { return engine; }
-
-	// 编译一个独立模块；同名模块会被整体替换。失败时把 AngelScript 诊断写入 r_error。
-	bool compile_module(const String &p_name, const String &p_source, String *r_error);
-
-	// 执行一个 AS 函数。参数编组在后续任务引入，本阶段仅支持无参函数。
-	static Error execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int p_argc, void *p_arg_ptrs, int *r_ret);
-
-	// 以 Variant 编组调用 AS 函数（ScriptInstance::callp 的通道）。只支持
-	// bool / int(int64) / float(double) 三类参数；返回值按 AS 返回类型映射为 Variant。
-	static Error call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret);
-
-	void shutdown();
+	virtual bool set(const StringName &p_name, const Variant &p_value) override;
+	virtual bool get(const StringName &p_name, Variant &r_ret) const override;
+	virtual void get_property_list(List<PropertyInfo> *p_properties) const override;
+	virtual Variant::Type get_property_type(const StringName &p_name, bool *r_is_valid = nullptr) const override;
+	virtual void validate_property(PropertyInfo &p_property) const override {}
+	virtual bool property_can_revert(const StringName &p_name) const override { return false; }
+	virtual bool property_get_revert(const StringName &p_name, Variant &r_ret) const override { return false; }
+	virtual Object *get_owner() override { return owner; }
+	virtual void get_method_list(List<MethodInfo> *p_list) const override;
+	virtual bool has_method(const StringName &p_method) const override;
+	virtual Variant callp(const StringName &p_method, const Variant **p_args, int p_argcount, Callable::CallError &r_error) override;
+	virtual void notification(int p_notification, bool p_reversed = false) override;
+	virtual Ref<Script> get_script() const override { return script; }
+	virtual ScriptLanguage *get_language() override;
 };

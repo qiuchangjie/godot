@@ -31,6 +31,7 @@
 #include "as_script.h"
 
 #include "as_engine.h"
+#include "as_script_instance.h"
 #include "as_script_language.h"
 
 #include "core/object/class_db.h"
@@ -271,6 +272,8 @@ void ASScript::get_script_property_list(List<PropertyInfo> *p_list) const {
 }
 
 ScriptInstance *ASScript::instance_create(Object *p_this) {
-	// Task 4 接管：返回 memnew(ASScriptInstance(Ref<ASScript>(this), p_this))。
-	return nullptr;
+	if (!valid) {
+		return nullptr;
+	}
+	return memnew(ASScriptInstance(Ref<ASScript>(this), p_this));
 }
