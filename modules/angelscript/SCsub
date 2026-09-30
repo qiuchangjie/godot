@@ -1,0 +1,13 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+Import("env_modules")
+
+env_as = env_modules.Clone()
+
+env_as.add_source_files(env.modules_sources, "*.cpp")
+
+# 测试用例写在 tests/*.h：modules/SCsub 会把各模块的 tests/*.h 汇进生成的
+# modules/modules_tests.gen.h，再由 tests/test_main.cpp 统一 include。
+# 不要在此编译 tests/*.cpp——那样写出来的 TEST_CASE 不会进入最终二进制。
