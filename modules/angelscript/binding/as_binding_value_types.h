@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  as_binding_decl.h                                                     */
+/*  as_binding_value_types.h                                              */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,45 +30,23 @@
 
 #pragma once
 
-#include "core/object/object.h"
-#include "core/string/string_name.h"
+#include "core/error/error_list.h"
 #include "core/variant/variant.h"
 
-// AngelScript 前向声明：本头会被不含 AS 头的测试翻译单元包含，不能直接 include <angelscript.h>。
-class asIScriptGeneric;
+#include <angelscript.h>
 
-// 跳板在运行期按形参/返回值的“类别”决定如何编组：标量走 AS 原生类型，
-// 内建值类型走 Variant 存储（本模块的统一内存布局），对象走 Object*。
-enum ASBindingKind {
-	AS_KIND_VOID,
-	AS_KIND_BOOL,
-	AS_KIND_INT64,
-	AS_KIND_DOUBLE,
-	AS_KIND_VALUE,
-	AS_KIND_OBJECT,
-};
-
-struct ASBindingType {
-	bool valid = false;
-	String as_name; // "int64" / "String" / "Node@" / "Vector2"
-	ASBindingKind kind = AS_KIND_VOID;
-	String unbound_reason; // 仅在 valid == false 时非空。
-};
-
-class ASBindingDecl {
+// 内建 Variant 值类型注册器（spec §3.3 / §3.8 M2 规格）。
+//
+// 设计要点：34 个内建值类型 + Variant 自身在 AS 侧都是独立的 asOBJ_VALUE 类型，
+// 但底层存储统一为 Godot Variant（sizeof(Variant)）：AS 的对象内存就是一块 Variant，
+// 构造/析构/赋值分别是 placement-new / ~Variant / operator=。
+// 内建方法、成员、运算符、索引全部由 Variant 的内省表驱动注册，跳板统一走 asCALL_GENERIC，
+// 因此新增值类型或 Godot 内省项无需改动本文件。
+class ASBindingValueTypes {
 public:
-	// Variant 标量/值类型 -> AS 类型名（OBJECT 不在此处理，因为它需要 class_name）。
-	static String variant_type_to_as(Variant::Type p_type);
-	// PropertyInfo -> AS 类型（含 OBJECT 的 class_name；枚举型属性退化为 int64）。
-	static ASBindingType resolve(const PropertyInfo &p_info);
-	// MethodInfo -> AS 声明串（不含所属类名）。失败时返回 false 并写 r_reason。
-	static bool method_to_decl(const MethodInfo &p_info, String *r_decl, String *r_reason);
-};
+	// 注册全部内建值类型与 string 工厂。幂等：已注册的类型通过 GetTypeInfoByName 跳过。
+	static Error register_all(asIScriptEngine *p_engine);
 
-// 通用跳板共用的编组辅助：值类型/对象/全局函数三处复用（Task 3/4）。
-// 从 asIScriptGeneric 的第 p_index 个实参按 kind 取出 Variant。
-Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind);
-// 把 Variant 按 kind 写回 asIScriptGeneric 的返回位置。
-void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value);
-// 形参传递形式：bool/int64/double 与 `T@` 句柄按值；其余内建值类型按 const 引用。
-String as_binding_render_param(const String &p_as_name);
+	// asCALL_GENERIC 跳板：内建方法/成员/运算符/索引共用；具体行为由 GetUserData 的绑定记录决定。
+	static void generic_value_call(asIScriptGeneric *p_gen);
+};

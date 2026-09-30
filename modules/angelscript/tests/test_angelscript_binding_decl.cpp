@@ -51,6 +51,12 @@ void as_binding_decl_scalar_mapping() {
 	CHECK(ASBindingDecl::variant_type_to_as(Variant::STRING) == "String");
 	CHECK(ASBindingDecl::variant_type_to_as(Variant::VECTOR2) == "Vector2");
 	CHECK(ASBindingDecl::variant_type_to_as(Variant::NIL).is_empty());
+
+	// kind 供跳板决定如何编组，Task 3/4 共用。
+	CHECK(ASBindingDecl::resolve(make_pi(Variant::INT)).kind == AS_KIND_INT64);
+	CHECK(ASBindingDecl::resolve(make_pi(Variant::FLOAT)).kind == AS_KIND_DOUBLE);
+	CHECK(ASBindingDecl::resolve(make_pi(Variant::VECTOR2)).kind == AS_KIND_VALUE);
+	CHECK(ASBindingDecl::resolve(make_pi(Variant::OBJECT, "Node")).kind == AS_KIND_OBJECT);
 }
 
 void as_binding_decl_object_and_enum() {

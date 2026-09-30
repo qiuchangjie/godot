@@ -30,6 +30,8 @@
 
 #include "as_binding_decl.h"
 
+#include <angelscript.h>
+
 String ASBindingDecl::variant_type_to_as(Variant::Type p_type) {
 	switch (p_type) {
 		// 标量：AS 原生类型。INT 必须是 64 位，Variant::INT 是 int64，32 位会截断。
@@ -103,15 +105,18 @@ ASBindingType ASBindingDecl::resolve(const PropertyInfo &p_info) {
 	return out;
 }
 
-// 形参的传递形式：标量按值；对象引用直接写 `T@`；其余内建值类型按 const 引用。
+String as_binding_render_param(const String &p_as_name) {
+	if (p_as_name == "bool" || p_as_name == "int64" || p_as_name == "double") {
+		return p_as_name;
+	}
+	if (p_as_name.ends_with("@")) {
+		return p_as_name;
+	}
+	return "const " + p_as_name + " &in";
+}
+
 static String render_param(const ASBindingType &t) {
-	if (t.as_name == "bool" || t.as_name == "int64" || t.as_name == "double") {
-		return t.as_name;
-	}
-	if (t.as_name.ends_with("@")) {
-		return t.as_name;
-	}
-	return "const " + t.as_name + " &in";
+	return as_binding_render_param(t.as_name);
 }
 
 bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, String *r_reason) {
@@ -172,4 +177,47 @@ bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, Str
 		*r_decl = decl;
 	}
 	return true;
+}
+
+Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind) {
+	switch (p_kind) {
+		case AS_KIND_BOOL:
+			return Variant((bool)p_gen->GetArgByte(p_index));
+		case AS_KIND_INT64:
+			return Variant((int64_t)p_gen->GetArgQWord(p_index));
+		case AS_KIND_DOUBLE:
+			return Variant(p_gen->GetArgDouble(p_index));
+		case AS_KIND_VALUE: {
+			// const T &in：GetArgObject 返回对象地址，其中存的是本模块统一的 Variant 存储。
+			void *p = p_gen->GetArgObject(p_index);
+			return p ? *(const Variant *)p : Variant();
+		}
+		case AS_KIND_OBJECT:
+			return Variant((Object *)p_gen->GetArgObject(p_index));
+		default:
+			return Variant();
+	}
+}
+
+void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value) {
+	switch (p_kind) {
+		case AS_KIND_BOOL:
+			*(bool *)p_gen->GetAddressOfReturnLocation() = (bool)p_value;
+			break;
+		case AS_KIND_INT64:
+			*(int64_t *)p_gen->GetAddressOfReturnLocation() = (int64_t)p_value;
+			break;
+		case AS_KIND_DOUBLE:
+			*(double *)p_gen->GetAddressOfReturnLocation() = (double)p_value;
+			break;
+		case AS_KIND_VALUE:
+			// 值类型按值返回：交给 AS 用注册的拷贝构造写进返回槽。
+			p_gen->SetReturnObject((void *)&p_value);
+			break;
+		case AS_KIND_OBJECT:
+			p_gen->SetReturnObject((void *)p_value.operator Object *());
+			break;
+		default:
+			break;
+	}
 }
