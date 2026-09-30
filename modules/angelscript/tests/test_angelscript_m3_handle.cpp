@@ -106,7 +106,41 @@ void probe_capture_slot(asIScriptGeneric *p_gen) {
 	p_gen->SetReturnDWord(0);
 }
 
-bool run_int(asIScriptEngine *p_engine, const String &p_source, const String &p_entry, int64_t *r_out, String *r_err) {
+// 宿主创建 / 释放的探针对象：整条用例共用同一个实例，脚本侧只拿得到非拥有句柄，
+// 因此"对象什么时候消失"完全由宿主决定 —— 这正是要验证的失效语义。
+Node *g_probe_node = nullptr;
+
+void probe_make_node(asIScriptGeneric *p_gen) {
+	if (g_probe_node == nullptr) {
+		g_probe_node = memnew(Node);
+	}
+	p_gen->SetReturnObject(as_handle_encode(g_probe_node, AS_KIND_OBJECT_NONOWNING));
+}
+
+void probe_free_node(asIScriptGeneric *p_gen) {
+	if (g_probe_node != nullptr) {
+		memdelete(g_probe_node);
+		g_probe_node = nullptr;
+	}
+}
+
+// 探针函数的幂等注册。以 probe_get_live 是否存在作为守卫：它们必须一次性全部注册，
+// 否则同一引擎上先后运行的用例会看到不一致的探针集合。
+void ensure_probe_functions(asIScriptEngine *p_engine) {
+	if (p_engine->GetGlobalFunctionByDecl("Node@ probe_get_live()") != nullptr) {
+		return;
+	}
+	p_engine->RegisterGlobalFunction("Node@ probe_get_live()", asFUNCTION(probe_get_live), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("Node@ probe_get_stale()", asFUNCTION(probe_get_stale), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("int probe_decode(Node@)", asFUNCTION(probe_decode), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("int probe_decode_raw(Node@)", asFUNCTION(probe_decode_raw), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("int probe_capture_slot(Node@)", asFUNCTION(probe_capture_slot), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("Node@ probe_make_node()", asFUNCTION(probe_make_node), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("void probe_free_node()", asFUNCTION(probe_free_node), asCALL_GENERIC);
+}
+
+// 公共前置：初始化引擎、注册绑定与探针、编译模块、取出入口函数并准备好上下文。
+bool prepare_probe_context(asIScriptEngine *p_engine, const String &p_source, const String &p_entry, asIScriptContext **r_ctx, String *r_err) {
 	ASEngine *as = ASEngine::get_singleton();
 	if (!as->ensure_initialized() || !as->is_initialized()) {
 		*r_err = "ensure_initialized failed";
@@ -115,14 +149,7 @@ bool run_int(asIScriptEngine *p_engine, const String &p_source, const String &p_
 	asIScriptEngine *engine = p_engine != nullptr ? p_engine : as->get_engine();
 	ASBindingValueTypes::register_all(engine);
 	ensure_object_binding(engine);
-
-	if (engine->GetGlobalFunctionByDecl("Node@ probe_get_live()") == nullptr) {
-		engine->RegisterGlobalFunction("Node@ probe_get_live()", asFUNCTION(probe_get_live), asCALL_GENERIC);
-		engine->RegisterGlobalFunction("Node@ probe_get_stale()", asFUNCTION(probe_get_stale), asCALL_GENERIC);
-		engine->RegisterGlobalFunction("int probe_decode(Node@)", asFUNCTION(probe_decode), asCALL_GENERIC);
-		engine->RegisterGlobalFunction("int probe_decode_raw(Node@)", asFUNCTION(probe_decode_raw), asCALL_GENERIC);
-		engine->RegisterGlobalFunction("int probe_capture_slot(Node@)", asFUNCTION(probe_capture_slot), asCALL_GENERIC);
-	}
+	ensure_probe_functions(engine);
 
 	const String module_name = "as_m3_probe_" + itos(g_module_seq++);
 	String compile_error;
@@ -139,12 +166,39 @@ bool run_int(asIScriptEngine *p_engine, const String &p_source, const String &p_
 	}
 	asIScriptContext *ctx = engine->CreateContext();
 	ERR_FAIL_NULL_V(ctx, false);
-	if (ctx->Prepare(func) < 0 || ctx->Execute() != asEXECUTION_FINISHED) {
-		*r_err = String(ctx->GetExceptionString() ? ctx->GetExceptionString() : "<no exception>");
+	if (ctx->Prepare(func) < 0) {
+		*r_err = "Prepare failed";
+		ctx->Release();
+		return false;
+	}
+	*r_ctx = ctx;
+	return true;
+}
+
+bool run_int(asIScriptEngine *p_engine, const String &p_source, const String &p_entry, int64_t *r_out, String *r_err) {
+	asIScriptContext *ctx = nullptr;
+	if (!prepare_probe_context(p_engine, p_source, p_entry, &ctx, r_err)) {
+		return false;
+	}
+	if (ctx->Execute() != asEXECUTION_FINISHED) {
+		*r_err = String(ctx->GetExceptionString() != nullptr ? ctx->GetExceptionString() : "<no exception>");
 		ctx->Release();
 		return false;
 	}
 	*r_out = ctx->GetReturnQWord();
+	ctx->Release();
+	return true;
+}
+
+// 期望异常的路径：不做"必须执行成功"的前置判断，而是把原始结果码与异常字符串交回用例，
+// 让用例能断言"抛出的是明确异常"而不是静默成功或崩溃。
+bool run_int_expecting_exception(asIScriptEngine *p_engine, const String &p_source, const String &p_entry, int *r_code, String *r_exception, String *r_err) {
+	asIScriptContext *ctx = nullptr;
+	if (!prepare_probe_context(p_engine, p_source, p_entry, &ctx, r_err)) {
+		return false;
+	}
+	*r_code = ctx->Execute();
+	*r_exception = ctx->GetExceptionString() != nullptr ? String(ctx->GetExceptionString()) : String();
 	ctx->Release();
 	return true;
 }
@@ -237,4 +291,49 @@ void as_m3_id_slot_through_real_binding() {
 	// 绑定层交出的必须是 ObjectID —— 能经 ObjectDB 反查回对象。
 	// 若交出的仍是裸指针，用指针值当 ObjectID 查表必然查不到（RED 时的表现）。
 	CHECK(ObjectDB::get_instance(ObjectID((uint64_t)g_captured_slot)) != nullptr);
+
+	// 收尾：脚本内由 factory 创建的 Node 没有释放通道（非拥有句柄本就不保活），
+	// 由宿主按真实类型释放，避免把泄漏带进 ObjectDB 退出报告。
+	Node *created = Object::cast_to<Node>(ObjectDB::get_instance(ObjectID((uint64_t)g_captured_slot)));
+	if (created != nullptr) {
+		memdelete(created);
+	}
+}
+
+// spec §3.4 与不变量 I-A：非拥有句柄指向的对象被释放后，任何经该句柄的访问
+// 都必须得到一条明确的 AS 异常，而不是野指针解引用，也不是静默成功。
+// 正控制保证失败确实来自"对象已释放"，而不是这条调用本身就跑不通。
+void as_m3_released_entity_rejected() {
+	g_probe_node = nullptr;
+
+	// 正控制：不释放时同样的成员调用必须正常返回。
+	int64_t out = -1;
+	String err;
+	const bool positive_ok = run_int(nullptr,
+			"int64 probe() {"
+			"  Node @n = probe_make_node();"
+			"  return int64(n.get_child_count(false)) + 42;"
+			"}",
+			"probe", &out, &err);
+	INFO("positive error: ", err);
+	REQUIRE(positive_ok);
+	CHECK(out == 42);
+
+	// 负控制：脚本先拿到非拥有句柄，宿主随后释放对象，再次访问必须抛明确异常。
+	int code = 0;
+	String exception;
+	err = String();
+	const bool negative_ran = run_int_expecting_exception(nullptr,
+			"int64 probe() {"
+			"  Node @n = probe_make_node();"
+			"  probe_free_node();"
+			"  return int64(n.get_child_count(false));"
+			"}",
+			"probe", &code, &exception, &err);
+	INFO("negative error: ", err);
+	REQUIRE(negative_ran);
+	CHECK(code == asEXECUTION_EXCEPTION);
+	// 异常必须点名出错的成员，否则使用者无从定位是哪个句柄失效了（Task 4 的交付点）。
+	CHECK(exception.find("get_child_count") >= 0);
+	CHECK(exception.find("has been freed") >= 0);
 }

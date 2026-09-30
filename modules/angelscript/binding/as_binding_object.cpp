@@ -288,7 +288,8 @@ void ASBindingObject::generic_method_call(asIScriptGeneric *p_gen) {
 	Object *self = as_handle_decode(p_gen->GetObject(), b->object_kind);
 	if (self == nullptr) {
 		// 两种原因合并成一条：槽为 null，或非拥有句柄指向的对象已经被 free()。
-		set_exception("AngelScript: object handle is null or the object has been freed");
+		// 带上成员名，使用者才能定位是哪个句柄失效了。
+		set_exception(vformat("AngelScript: %s: object is null or has been freed", b->member));
 		return;
 	}
 
@@ -326,7 +327,8 @@ void ASBindingObject::generic_property_get(asIScriptGeneric *p_gen) {
 	Object *self = as_handle_decode(p_gen->GetObject(), b->object_kind);
 	if (self == nullptr) {
 		// 两种原因合并成一条：槽为 null，或非拥有句柄指向的对象已经被 free()。
-		set_exception("AngelScript: object handle is null or the object has been freed");
+		// 带上成员名，使用者才能定位是哪个句柄失效了。
+		set_exception(vformat("AngelScript: %s: object is null or has been freed", b->member));
 		return;
 	}
 	bool valid = false;
@@ -346,7 +348,8 @@ void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
 	Object *self = as_handle_decode(p_gen->GetObject(), b->object_kind);
 	if (self == nullptr) {
 		// 两种原因合并成一条：槽为 null，或非拥有句柄指向的对象已经被 free()。
-		set_exception("AngelScript: object handle is null or the object has been freed");
+		// 带上成员名，使用者才能定位是哪个句柄失效了。
+		set_exception(vformat("AngelScript: %s: object is null or has been freed", b->member));
 		return;
 	}
 	Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);

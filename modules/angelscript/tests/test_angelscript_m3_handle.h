@@ -38,6 +38,7 @@
 void as_m3_nonowning_id_slot_probe();
 void as_m3_property_kind_from_static_type();
 void as_m3_id_slot_through_real_binding();
+void as_m3_released_entity_rejected();
 
 #ifndef ANGELSCRIPT_M3_HANDLE_TESTS_IMPL
 
@@ -51,6 +52,10 @@ TEST_CASE("[AngelScript][M3] property kind follows static type") {
 
 TEST_CASE("[AngelScript][M3] id slot works through real binding") {
 	as_m3_id_slot_through_real_binding();
+}
+
+TEST_CASE("[AngelScript][M3] released entity is rejected") {
+	as_m3_released_entity_rejected();
 }
 
 #endif // ANGELSCRIPT_M3_HANDLE_TESTS_IMPL

@@ -32,6 +32,19 @@
 - 绑定层类型（M2）：`int`→`int64`、`float`→`double`、`StringName`/`NodePath` 等内建值类型按 `Variant` 存储的类型直接可用；对象类型必须用显式句柄语法（`Node @n = Node();`，本模块关闭了 AS 的隐式句柄），枚举写作 `<声明类>_<枚举名>::<值>`（如 `Node_ProcessMode::PROCESS_MODE_ALWAYS`），常量写作 `<声明类>_<常量名>`（如 `Object_NOTIFICATION_PREDELETE`）。
 - 回调形参：需要对象或字符串形参的回调（`_input` / `_shortcut_input` / `_unhandled_input` / `_unhandled_key_input` / `_get_configuration_warnings` 等）暂不会被派发（`_process` 这类标量形参除外），因为 `ASScriptInstance::callp` 的编组目前只支持标量；绑定层已能表达对象与字符串，补全回调通道属后续里程碑。
 
+## 对象句柄语义（M3）
+
+句柄的拥有 / 非拥有语义由**静态类型**决定，在注册时一次判定：
+
+| 静态类型 | 槽内容 | 语义 |
+| --- | --- | --- |
+| 派生自 `RefCounted`（`Resource@`、`RefCounted@` …） | 裸 `Object*` | **拥有**：AS 持有期间保活（引用计数 +1） |
+| 其余（`Node@`、`Object@` …） | `ObjectID` | **非拥有 / 弱引用**：不保活；对象被释放后访问抛明确异常 |
+
+- `Object@` 是弱引用：把 `RefCounted` 实例赋给 `Object@` **不会**保活它；需要保活请声明具体类型（如 `Resource@`）。
+- 非拥有句柄每次解引用都要经 `ObjectDB` 查表校验，因此脚本持有句柄不会阻止对象被释放，也不会产生跨边界的引用环。
+- 对象被释放后再经非拥有句柄访问，得到 `AngelScript: <成员名>: object is null or has been freed` 异常，而不是野指针。
+
 ### 已知限制
 
 - 基类指令扫描是逐行的字面量匹配（行首 `// godot_base:`），不做块注释解析：若 `/* ... */` 块注释内恰好有一行以 `// godot_base:` 开头，它会被当成指令。指令是作者侧的引导约定、并非外部输入，故此限制在阶段一接受；块注释感知的扫描留待 M2 编辑器集成。
