@@ -40,6 +40,8 @@ void as_m3_property_kind_from_static_type();
 void as_m3_id_slot_through_real_binding();
 void as_m3_released_entity_rejected();
 void as_m3_weak_handle_slot_holds_id();
+void as_m3_refcount_paths_balanced();
+void as_m3_render_param_auto_handle();
 
 #ifndef ANGELSCRIPT_M3_HANDLE_TESTS_IMPL
 
@@ -61,6 +63,14 @@ TEST_CASE("[AngelScript][M3] released entity is rejected") {
 
 TEST_CASE("[AngelScript][M3] weak handle slot holds ObjectID") {
 	as_m3_weak_handle_slot_holds_id();
+}
+
+TEST_CASE("[AngelScript][M3] refcount paths balanced") {
+	as_m3_refcount_paths_balanced();
+}
+
+TEST_CASE("[AngelScript][M3] object handle param renders auto handle") {
+	as_m3_render_param_auto_handle();
 }
 
 #endif // ANGELSCRIPT_M3_HANDLE_TESTS_IMPL

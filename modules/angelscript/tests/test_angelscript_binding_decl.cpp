@@ -92,7 +92,8 @@ void as_binding_decl_method_forms() {
 	add.arguments.push_back(make_pi(Variant::OBJECT, "Node"));
 	add.flags = METHOD_FLAG_NORMAL;
 	CHECK(ASBindingDecl::method_to_decl(add, &decl, &reason));
-	CHECK(decl == "void add_child(Node@)");
+	// 对象句柄形参带 `+`（auto handle）：见 as_binding_render_param 的 Ruling C 说明。
+	CHECK(decl == "void add_child(Node@+)");
 
 	// AS 2.38 无 static 关键字：静态方法必须整体归为 unbound，且声明里不得出现 "static"。
 	MethodInfo stat;

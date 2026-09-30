@@ -106,6 +106,13 @@ void probe_capture_slot(asIScriptGeneric *p_gen) {
 	p_gen->SetReturnDWord(0);
 }
 
+// 同上，但参数声明成 Object@ —— 用于拿到 RefCounted 对象的 ObjectID
+// （RefCounted 的自身槽是裸指针，只有经 Object@ 弱句柄才会折成 ObjectID）。
+void probe_capture_object_id(asIScriptGeneric *p_gen) {
+	g_captured_slot = (uint64_t)(uintptr_t)p_gen->GetArgObject(0);
+	p_gen->SetReturnDWord(0);
+}
+
 // 宿主创建 / 释放的探针对象：整条用例共用同一个实例，脚本侧只拿得到非拥有句柄，
 // 因此"对象什么时候消失"完全由宿主决定 —— 这正是要验证的失效语义。
 Node *g_probe_node = nullptr;
@@ -150,7 +157,10 @@ void ensure_probe_functions(asIScriptEngine *p_engine) {
 	p_engine->RegisterGlobalFunction("Node@ probe_make_node()", asFUNCTION(probe_make_node), asCALL_GENERIC);
 	p_engine->RegisterGlobalFunction("void probe_free_node()", asFUNCTION(probe_free_node), asCALL_GENERIC);
 	p_engine->RegisterGlobalFunction("int64 probe_handle_raw(Object@)", asFUNCTION(probe_handle_raw), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("int64 probe_owning_id(Resource@)", asFUNCTION(probe_owning_id), asCALL_GENERIC);
+	// 形参声明走生产渲染器：这条探针因此锁住 as_binding_render_param 对对象句柄的处理。
+	const String owning_decl = "int64 probe_owning_id(" + as_binding_render_param("Resource@") + ")";
+	p_engine->RegisterGlobalFunction(owning_decl.utf8().get_data(), asFUNCTION(probe_owning_id), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("int probe_capture_object_id(Object@)", asFUNCTION(probe_capture_object_id), asCALL_GENERIC);
 }
 
 // 公共前置：初始化引擎、注册绑定与探针、编译模块、取出入口函数并准备好上下文。
@@ -345,7 +355,9 @@ void as_m3_released_entity_rejected() {
 	const bool positive_ok = run_int(nullptr,
 			"int64 probe() {"
 			"  Node @n = probe_make_node();"
-			"  return int64(n.get_child_count(false)) + 42;"
+			"  int64 result = int64(n.get_child_count(false)) + 42;"
+			"  probe_free_node();"
+			"  return result;"
 			"}",
 			"probe", &out, &err);
 	INFO("positive error: ", err);
@@ -404,4 +416,176 @@ void as_m3_weak_handle_slot_holds_id() {
 	INFO("ref error: ", err);
 	REQUIRE(ref_ok);
 	CHECK(nearly(ref_delta, 0.0));
+
+	// 不变量 3：上面两段脚本创建的 Resource 都必须在上下文结束后真正销毁。
+	//   AS 释放句柄时走 generic_release，它必须把计数归零的对象 memdelete 掉。
+	//   这里覆盖"只创建 + 上转"的基线路径（参数路径见 as_m3_refcount_paths_balanced 的 ⑦）。
+	{
+		g_captured_slot = 0;
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"double probe() {"
+				"  Resource @r = Resource();"
+				"  Object @o = r;"
+				"  return double(probe_capture_object_id(o));"
+				"}",
+				"probe", &out, &err);
+		INFO("lifetime error: ", err);
+		REQUIRE(ok);
+		REQUIRE(g_captured_slot != 0);
+		RefCounted *leaked = Object::cast_to<RefCounted>(ObjectDB::get_instance(ObjectID((uint64_t)g_captured_slot)));
+		INFO("leaked refcount: ", leaked != nullptr ? leaked->get_reference_count() : -1);
+		CHECK(leaked == nullptr);
+	}
+}
+
+// spec §7：引用计数一致性。AS 的 addref 跳板此前只调 init_ref()，
+// 对"已经持有其他引用"的对象不会真正加计数，于是 `Resource @b = a;`
+// 之后释放 b 会把对象计数打回 0，令 a 变成悬垂句柄。
+// 这里按四条可观测路径分别断言，便于 RED 精确定位是哪一条失衡。
+void as_m3_refcount_paths_balanced() {
+	// ① 新建 + 单个句柄持有 ⇒ 计数为 1。
+	{
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"double main() {"
+				"  Resource @a = Resource();"
+				"  return double(a.get_reference_count()) - 1.0;"
+				"}",
+				"main", &out, &err);
+		INFO("base error: ", err);
+		REQUIRE(ok);
+		CHECK(nearly(out, 0.0));
+	}
+
+	// ② 第二个句柄赋值 ⇒ 计数再 +1。
+	{
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"double main() {"
+				"  Resource @a = Resource();"
+				"  double base = double(a.get_reference_count());"
+				"  Resource @b = a;"
+				"  return double(a.get_reference_count()) - base - 1.0;"
+				"}",
+				"main", &out, &err);
+		INFO("assign error: ", err);
+		REQUIRE(ok);
+		CHECK(nearly(out, 0.0));
+	}
+
+	// ③ 第二个句柄置空 ⇒ 归还那一份引用。
+	{
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"double main() {"
+				"  Resource @a = Resource();"
+				"  double base = double(a.get_reference_count());"
+				"  Resource @b = a;"
+				"  @b = null;"
+				"  return double(a.get_reference_count()) - base;"
+				"}",
+				"main", &out, &err);
+		INFO("release error: ", err);
+		REQUIRE(ok);
+		CHECK(nearly(out, 0.0));
+	}
+
+	// ④ 参数往返 ⇒ 进出计数守恒（调用期间允许 +1，返回后必须回到原值）。
+	{
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"void take(Resource @r) {}"
+				"double main() {"
+				"  Resource @a = Resource();"
+				"  double before = double(a.get_reference_count());"
+				"  take(a);"
+				"  return double(a.get_reference_count()) - before;"
+				"}",
+				"main", &out, &err);
+		INFO("param error: ", err);
+		REQUIRE(ok);
+		CHECK(nearly(out, 0.0));
+	}
+
+	// ⑤ 返回值路径 ⇒ 接收变量只接管一份引用，不得双重 addref（spec §7 路径 3）。
+	//    `duplicate()` 在宿主侧新建对象并 SetReturnObject，若这里再多加一次引用，
+	//    返回的计数会变成 2。
+	{
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"double main() {"
+				"  Resource @r = Resource();"
+				"  Resource @d = r.duplicate(false);"
+				"  return double(d.get_reference_count()) - 1.0;"
+				"}",
+				"main", &out, &err);
+		INFO("return error: ", err);
+		REQUIRE(ok);
+		CHECK(nearly(out, 0.0));
+	}
+
+	// ⑥ 局部 RefCounted 离开作用域后必须真的被释放：引用计数若没回到 0，
+	//    对象会永久留在 ObjectDB（进程退出时表现为 leaked 告警）。
+	//    这里用 Object@ 弱句柄把对象 ID 带回宿主，上下文结束后再查 ObjectDB。
+	{
+		g_captured_slot = 0;
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"double probe() {"
+				"  Resource @a = Resource();"
+				"  Object @o = a;"
+				"  return double(probe_capture_object_id(o));"
+				"}",
+				"probe", &out, &err);
+		INFO("lifetime error: ", err);
+		REQUIRE(ok);
+		REQUIRE(g_captured_slot != 0);
+		RefCounted *leaked = Object::cast_to<RefCounted>(ObjectDB::get_instance(ObjectID((uint64_t)g_captured_slot)));
+		INFO("leaked refcount: ", leaked != nullptr ? leaked->get_reference_count() : -1);
+		CHECK(leaked == nullptr);
+	}
+
+	// ⑦ 拥有句柄作为**实参**传给已注册的宿主函数 ⇒ 调用前后计数守恒（Ruling C）。
+	//    形参声明缺 `+`（auto handle）时，引擎不会在调用后 release 参数，
+	//    对象引用计数会永久 +1，上下文结束后仍在 ObjectDB 里残留。
+	{
+		g_captured_slot = 0;
+		double out = 0.0;
+		String err;
+		const bool ok = run_double(nullptr,
+				"double probe() {"
+				"  Resource @a = Resource();"
+				"  Object @o = a;"
+				"  int64 id = probe_owning_id(a);"
+				"  return double(probe_capture_object_id(o)) + double(id) * 0.0;"
+				"}",
+				"probe", &out, &err);
+		INFO("owning-arg error: ", err);
+		REQUIRE(ok);
+		REQUIRE(g_captured_slot != 0);
+		RefCounted *leaked = Object::cast_to<RefCounted>(ObjectDB::get_instance(ObjectID((uint64_t)g_captured_slot)));
+		INFO("leaked refcount: ", leaked != nullptr ? leaked->get_reference_count() : -1);
+		CHECK(leaked == nullptr);
+	}
+}
+
+// spec §7 与 Ruling C：形参声明渲染器对对象句柄必须追加 `+`（auto handle）。
+// 缺 `+` 会让拥有句柄作为实参传给已注册函数时多一次 addref 且无对应 release。
+void as_m3_render_param_auto_handle() {
+	CHECK(as_binding_render_param("Resource@") == "Resource@+");
+	CHECK(as_binding_render_param("Node@") == "Node@+");
+	CHECK(as_binding_render_param("Object@") == "Object@+");
+	// 既有契约不得回退：标量按值、内建值类型按 const 引用。
+	CHECK(as_binding_render_param("int64") == "int64");
+	CHECK(as_binding_render_param("bool") == "bool");
+	CHECK(as_binding_render_param("double") == "double");
+	CHECK(as_binding_render_param("Vector3") == "const Vector3 &in");
 }

@@ -116,7 +116,10 @@ String as_binding_render_param(const String &p_as_name) {
 		return p_as_name;
 	}
 	if (p_as_name.ends_with("@")) {
-		return p_as_name;
+		// 对象句柄必须带 `+`（auto handle）：实参若不带，拥有句柄传给已注册函数时
+		// 引擎只做一次 addref 而不在调用后 release，引用计数会永久 +1（Ruling C）。
+		// 对非拥有类型（addref/release 为 noop）加 `+` 无害，故可统一处理。
+		return p_as_name + "+";
 	}
 	return "const " + p_as_name + " &in";
 }

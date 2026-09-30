@@ -394,6 +394,11 @@ void ASBindingObject::generic_instantiate(asIScriptGeneric *p_gen) {
 void ASBindingObject::generic_addref(asIScriptGeneric *p_gen) {
 	RefCounted *rc = static_cast<RefCounted *>((Object *)p_gen->GetObject());
 	if (rc) {
+		// 只用 init_ref()，不要写成 `if (!init_ref()) { reference(); }`（spec §7 审计结论）。
+		// 本 fork 的 init_ref()：refcount 自增后，若这是“第一份引用”（refcount_init 仍为 1）
+		// 则回退一次，净变化 0；其后每次调用 refcount_init 已为 0，净变化 +1。
+		// 而 reference() 只在 refcount 已归零时返回 false —— 归零意味着对象已被 memdelete，
+		// 此时再调 reference() 是读已释放内存。因此 init_ref() 既是正确语义，也是唯一安全写法。
 		rc->init_ref();
 	}
 }
@@ -401,7 +406,12 @@ void ASBindingObject::generic_addref(asIScriptGeneric *p_gen) {
 void ASBindingObject::generic_release(asIScriptGeneric *p_gen) {
 	RefCounted *rc = static_cast<RefCounted *>((Object *)p_gen->GetObject());
 	if (rc) {
-		rc->unreference();
+		// unreference() 只把计数减一，并用返回值告诉调用方“是否该销毁”，它自己不销毁。
+		// 丢弃返回值会让计数归零的对象永远留在 ObjectDB（M2 的既有缺陷，表现为退出期
+		// "ObjectDB instances were leaked"）。对齐 Ref<T>::unref() 的写法。
+		if (rc->unreference()) {
+			memdelete(rc);
+		}
 	}
 }
 
