@@ -33,10 +33,32 @@
 #include "as_script.h"
 
 #include "core/io/file_access.h"
+#include "core/os/thread.h"
 
 // 加载即编译：把源码交给 ASScript::compile_source()，语法/基类/类名三类错误都在这里拦下，
 // 这样编辑器 FileSystem 打开 .as 文件时就能看到明确报错，而不是等到运行时。
 Ref<Resource> ASResourceFormatLoaderASScript::load(const String &p_path, const String &p_original_path, Error *r_error, bool p_use_sub_threads, float *r_progress, CacheMode p_cache_mode) {
+	// AS 引擎主线程独占（spec §4.4.3）：AngelScript 的模块表与类型注册都没有加锁。
+	// ResourceLoader 的同步加载在主线程，但 load_threaded_request() 会在工作线程进入这里，
+	// 必须显式拦下，否则会静默破坏引擎状态。
+	if (!Thread::is_main_thread()) {
+		ERR_PRINT(vformat("AngelScript resources must be loaded on the main thread: '%s'", p_path));
+		if (r_error) {
+			*r_error = ERR_UNAVAILABLE;
+		}
+		return Ref<Resource>();
+	}
+
+	if (p_path.get_extension().to_lower() == "asb") {
+		// `.asb`（预编译字节码）在阶段一只保留扩展名识别；二进制形态的读写与版本校验属于
+		// 后续里程碑，这里明确拒绝，避免把二进制当 UTF-8 文本读出一堆无意义诊断。
+		ERR_PRINT(vformat("AngelScript bytecode '.asb' is not supported yet: '%s'", p_path));
+		if (r_error) {
+			*r_error = ERR_FILE_UNRECOGNIZED;
+		}
+		return Ref<Resource>();
+	}
+
 	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
 	if (f.is_null()) {
 		if (r_error) {

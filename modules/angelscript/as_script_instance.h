@@ -53,6 +53,10 @@ public:
 	ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owner);
 	virtual ~ASScriptInstance() override;
 
+	// AS 侧对象为空表示构造失败（没有默认 factory，或构造函数执行异常）。
+	// ASScript::instance_create() 据此丢弃半成品实例，避免返回"哑实例"。
+	bool is_instantiated() const { return object != nullptr; }
+
 	virtual bool set(const StringName &p_name, const Variant &p_value) override;
 	virtual bool get(const StringName &p_name, Variant &r_ret) const override;
 	virtual void get_property_list(List<PropertyInfo> *p_properties) const override;

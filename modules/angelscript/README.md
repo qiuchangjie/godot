@@ -13,15 +13,21 @@
 - `ASScript`：`.as`/`.asb` 资源（`Script` 子类），经 `ASResourceFormatLoaderASScript` / `ASResourceFormatSaverASScript` 接入资源系统，`.tscn` 可按路径引用。
 - `ASScriptInstance`：脚本实例，支持内建标量属性的读写与方法按名字调用；`_ready`/`_enter_tree`/`_exit_tree`/`_process`/`_physics_process` 经 Node 的 `GDVIRTUAL` 按名字派发，`notification()` 承载 `_notification(int)`。
 
-尚未提供（后续里程碑）：跨语言绑定层（引擎 API 编组）、字符串/对象类型、协程（await）、编辑器语言服务与断点调试、`.asb` 预编译产物的生成工具。
+尚未提供（后续里程碑）：跨语言绑定层（引擎 API 编组）、字符串/对象类型、协程（await）、编辑器语言服务与断点调试（`validate()` / `find_function()` / `make_function()` 等暂为 stub）、`.asb` 预编译产物的生成工具。
 
 ## 脚本约定
 
-- 扩展名：`.as`（编辑器保存）与 `.asb`（预编译形态，阶段一只做识别与加载）。
+- 扩展名：`.as` 为唯一可加载形态；`.asb`（预编译字节码）阶段一只保留扩展名识别，加载器会明确拒绝（二进制读写与版本校验属后续里程碑）。
+- 加载线程：`.as` 必须在主线程加载（AS 引擎主线程独占，见 `as_engine.h`）；`ResourceLoader.load_threaded_request()` 会失败并打印错误，而不是在后台线程破坏引擎状态。
 - 基类指令：源码前 10 行内必须有一行 `// godot_base: <ClassDB 类型名>`，它决定 `ASScript::get_instance_base_type()`（如 `Node`、`Resource`）。缺少或类型不存在都会导致加载失败。
 - 类名必须等于文件名（不含扩展名），例如 `res://enemy_spawner.as` 里的类必须叫 `enemy_spawner`。本模块不做全局类名注册，脚本一律按路径引用。
 - 回调签名必须与 Godot 一致：`void _ready()`、`void _process(double delta)`、`void _physics_process(double delta)`、`void _enter_tree()`、`void _exit_tree()`、`void _notification(int what)`。签名不匹配的回调不会被派发（例如 `void _process()` 视为不存在）。
 - 属性：阶段一支持 `bool` / `int` / `int64` / `float` / `double`；方法参数与返回值支持同样的标量类型（`int` 形参按 32 位、`int64` 按 64 位编组）。
+- 回调形参：需要对象或字符串形参的回调（`_input` / `_shortcut_input` / `_unhandled_input` / `_unhandled_key_input` / `_get_configuration_warnings` 等）在阶段一不会被派发（`_process` 这类标量形参除外）；补全它们需要 M2 的绑定层，当前只是"签名不匹配即视为不存在"，不会崩溃。
+
+### 已知限制
+
+- 基类指令扫描是逐行的字面量匹配（行首 `// godot_base:`），不做块注释解析：若 `/* ... */` 块注释内恰好有一行以 `// godot_base:` 开头，它会被当成指令。指令是作者侧的引导约定、并非外部输入，故此限制在阶段一接受；块注释感知的扫描留待 M2 编辑器集成。
 
 示例 `res://main.as`：
 

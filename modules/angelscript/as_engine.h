@@ -58,8 +58,9 @@ public:
 	// 编译一个独立模块；同名模块会被整体替换。失败时把 AngelScript 诊断写入 r_error。
 	bool compile_module(const String &p_name, const String &p_source, String *r_error);
 
-	// 执行一个 AS 函数。参数编组在后续任务引入，本阶段仅支持无参函数。
-	static Error execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int p_argc, void *p_arg_ptrs, int *r_ret);
+	// 执行一个无参全局 AS 函数并把整型返回值写入 r_ret（测试/宿主辅助入口）。
+	// 内部复用 call_function()，因此与回调通道共享参数编组、返回值映射与异常日志。
+	static Error execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int *r_ret);
 
 	// 以 Variant 编组调用 AS 函数（ScriptInstance::callp 的通道）。只支持
 	// bool / int(int64) / float(double) 三类参数；返回值按 AS 返回类型映射为 Variant。

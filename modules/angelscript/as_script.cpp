@@ -52,6 +52,7 @@ void ASScript::clear() {
 	compile_error = String();
 	class_name = StringName();
 	instance_base_type = StringName();
+	source_code = String();
 	if (!module_name.is_empty() && ASEngine::get_singleton()->is_initialized()) {
 		asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
 		CharString module_cstr = module_name.utf8();
@@ -83,6 +84,9 @@ asITypeInfo *ASScript::_find_script_class(asIScriptModule *p_module, const Strin
 }
 
 bool ASScript::compile_source(const String &p_source, const String &p_path, String *r_error) {
+	// 先取副本再 clear()：reload() 会把成员 source_code 作为 p_source 传进来（别名），
+	// clear() 清空 source_code 后 p_source 会失效，拷贝必须发生在此之前。
+	String src = p_source;
 	clear();
 
 	if (p_path.is_empty()) {
@@ -98,7 +102,6 @@ bool ASScript::compile_source(const String &p_source, const String &p_path, Stri
 	// 不能用 `String::utf8("\xEF\xBB\xBF", 3)` 判定：parse_utf8/append_utf8 遇到开头的 BOM 会
 	// 直接跳过（见 core/string/ustring.cpp 中 "just skip it" 注释），该表达式恒为空串，而空串是
 	// 任意字符串的前缀（begins_with("") 恒真），会无条件剥掉首字符。这里直接比对码点。
-	String src = p_source;
 	src = src.replace("\r\n", "\n");
 	if (!src.is_empty() && src[0] == char32_t(0xFEFF)) {
 		src = src.substr(1);
@@ -275,5 +278,12 @@ ScriptInstance *ASScript::instance_create(Object *p_this) {
 	if (!valid) {
 		return nullptr;
 	}
-	return memnew(ASScriptInstance(Ref<ASScript>(this), p_this));
+	ASScriptInstance *instance = memnew(ASScriptInstance(Ref<ASScript>(this), p_this));
+	if (!instance->is_instantiated()) {
+		// 构造失败（无默认 factory / 构造执行异常）时不能把半成品交出去，
+		// 否则 Object 会把一个无法调用任何方法的"哑实例"当成有效脚本实例。
+		memdelete(instance);
+		return nullptr;
+	}
+	return instance;
 }

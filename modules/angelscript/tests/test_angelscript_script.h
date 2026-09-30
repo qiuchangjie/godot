@@ -45,6 +45,11 @@ void as_script_rejects_missing_base_directive();
 void as_script_rejects_unknown_base_type();
 void as_script_rejects_class_name_that_does_not_match_file_name();
 void as_script_rejects_syntax_errors();
+void as_script_rejects_empty_and_whitespace_source();
+void as_script_rejects_directive_after_line_10();
+void as_script_clear_resets_source_code();
+void as_script_loads_through_resource_loader_from_user_path();
+void as_script_reload_recompiles_from_updated_source();
 
 // 本头会被两处 include：tests/test_main.cpp（用于注册用例）与同目录的
 // test_angelscript_script.cpp（只为拿到上面的辅助函数声明）。实现方必须先定义
@@ -78,6 +83,26 @@ TEST_CASE("[AngelScript] ASScript rejects class name that does not match file na
 
 TEST_CASE("[AngelScript] ASScript rejects syntax errors and stays invalid") {
 	as_script_rejects_syntax_errors();
+}
+
+TEST_CASE("[AngelScript] ASScript rejects empty and whitespace-only source") {
+	as_script_rejects_empty_and_whitespace_source();
+}
+
+TEST_CASE("[AngelScript] ASScript only scans the first 10 lines for the base directive") {
+	as_script_rejects_directive_after_line_10();
+}
+
+TEST_CASE("[AngelScript] ASScript clear() resets source code") {
+	as_script_clear_resets_source_code();
+}
+
+TEST_CASE("[AngelScript] ASScript loads through ResourceLoader from user://") {
+	as_script_loads_through_resource_loader_from_user_path();
+}
+
+TEST_CASE("[AngelScript] ASScript reload() recompiles from updated source") {
+	as_script_reload_recompiles_from_updated_source();
 }
 
 #endif // ANGELSCRIPT_SCRIPT_TESTS_IMPL

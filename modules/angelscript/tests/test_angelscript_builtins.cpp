@@ -68,5 +68,5 @@ void as_builtin_log_int_is_callable_from_script() {
 	}
 
 	int unused = 0;
-	CHECK(ASEngine::execute(as->get_engine(), func, 0, nullptr, &unused) == OK);
+	CHECK(ASEngine::execute(as->get_engine(), func, &unused) == OK);
 }

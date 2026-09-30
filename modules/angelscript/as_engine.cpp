@@ -84,7 +84,9 @@ bool ASEngine::compile_module(const String &p_name, const String &p_source, Stri
 	last_error = String();
 
 	// asGM_ALWAYS_CREATE：同名模块整体替换，符合"热更=替换"的语义（spec §7）。
-	asIScriptModule *mod = engine->GetModule(p_name.utf8().get_data(), asGM_ALWAYS_CREATE);
+	// 具名 CharString 承载模块名，避免 `p_name.utf8().get_data()` 的临时对象生命周期含糊。
+	CharString module_cstr = p_name.utf8();
+	asIScriptModule *mod = engine->GetModule(module_cstr.get_data(), asGM_ALWAYS_CREATE);
 	if (mod == nullptr) {
 		if (r_error) {
 			*r_error = "failed to create AngelScript module: " + p_name;
@@ -93,10 +95,13 @@ bool ASEngine::compile_module(const String &p_name, const String &p_source, Stri
 	}
 
 	CharString src = p_source.utf8();
-	if (mod->AddScriptSection(p_name.utf8().get_data(), src.get_data(), src.length()) < 0) {
+	if (mod->AddScriptSection(module_cstr.get_data(), src.get_data(), src.length()) < 0) {
+		// asGM_ALWAYS_CREATE 已经替换掉同名旧模块；这里失败必须丢弃新模块，否则会留下一个
+		// 没有 section 的孤儿模块（ASScript::compile_source 失败时不会记录 module_name）。
 		if (r_error) {
 			*r_error = "failed to add script section: " + p_name;
 		}
+		engine->DiscardModule(module_cstr.get_data());
 		return false;
 	}
 
@@ -104,41 +109,32 @@ bool ASEngine::compile_module(const String &p_name, const String &p_source, Stri
 		if (r_error) {
 			*r_error = last_error.is_empty() ? "AngelScript build failed: " + p_name : last_error;
 		}
-		engine->DiscardModule(p_name.utf8().get_data());
+		engine->DiscardModule(module_cstr.get_data());
 		return false;
 	}
 
 	return true;
 }
 
-Error ASEngine::execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int p_argc, void *p_arg_ptrs, int *r_ret) {
+Error ASEngine::execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int *r_ret) {
 	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
 	ERR_FAIL_NULL_V(p_func, ERR_INVALID_PARAMETER);
 
 	asIScriptContext *ctx = p_engine->CreateContext();
 	ERR_FAIL_NULL_V(ctx, ERR_CANT_CREATE);
 
-	int prepared = ctx->Prepare(p_func);
-	if (prepared < 0) {
-		ctx->Release();
-		return ERR_CANT_CREATE;
-	}
-
-	(void)p_argc;
-	(void)p_arg_ptrs;
-
-	int executed = ctx->Execute();
-	if (executed != asEXECUTION_FINISHED) {
-		ctx->Release();
-		return FAILED;
-	}
-
-	if (r_ret) {
-		*r_ret = (int)ctx->GetReturnDWord();
-	}
-
-	ctx->Unprepare();
+	// 无参全局函数 = 以空对象、零参调用 call_function，复用其参数编组、返回值映射
+	// （bool/int32/int64/float/double）与异常日志；旧实现无条件 GetReturnDWord()，
+	// 对 void/bool/double 返回值都会给出错误结果。
+	Variant ret;
+	const Error err = call_function(ctx, p_func, nullptr, nullptr, 0, &ret);
 	ctx->Release();
+	if (err != OK) {
+		return err;
+	}
+	if (r_ret != nullptr) {
+		*r_ret = (ret.get_type() == Variant::INT) ? (int)(int64_t)ret : 0;
+	}
 	return OK;
 }
 
@@ -203,7 +199,17 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 		}
 	}
 
-	if (p_context->Execute() != asEXECUTION_FINISHED) {
+	const int executed = p_context->Execute();
+	if (executed != asEXECUTION_FINISHED) {
+		// 静默吞掉异常会让脚本错误在宿主侧完全不可见（callp 只把它翻译成一个泛化错误码）。
+		const char *exception = p_context->GetExceptionString();
+		const char *section = nullptr;
+		const int line = p_context->GetExceptionLineNumber(nullptr, &section);
+		ERR_PRINT(vformat("AngelScript call '%s' failed: %s (%s:%d).",
+				p_func->GetName() != nullptr ? p_func->GetName() : "<anonymous>",
+				exception != nullptr ? exception : "execution did not finish",
+				section != nullptr ? section : "<script>",
+				line));
 		p_context->Unprepare();
 		return FAILED;
 	}

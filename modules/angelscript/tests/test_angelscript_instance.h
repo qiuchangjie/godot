@@ -40,6 +40,8 @@ void as_instance_ready_is_dispatched_by_name();
 void as_instance_notification_reaches_notification();
 void as_instance_process_receives_delta();
 void as_instance_signature_mismatch_is_not_exposed();
+void as_instance_requires_default_constructor();
+void as_instance_scalar_properties_round_trip();
 
 #ifndef ANGELSCRIPT_INSTANCE_TESTS_IMPL
 
@@ -57,6 +59,14 @@ TEST_CASE("[AngelScript] _process receives delta as double") {
 
 TEST_CASE("[AngelScript] callback with mismatched signature is not exposed") {
 	as_instance_signature_mismatch_is_not_exposed();
+}
+
+TEST_CASE("[AngelScript] class without a default constructor cannot be instantiated") {
+	as_instance_requires_default_constructor();
+}
+
+TEST_CASE("[AngelScript] scalar properties round-trip through the instance") {
+	as_instance_scalar_properties_round_trip();
 }
 
 #endif // ANGELSCRIPT_INSTANCE_TESTS_IMPL

@@ -50,7 +50,16 @@ ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owne
 	ERR_FAIL_NULL_MSG(context, "Failed to create an AngelScript context.");
 
 	// 默认构造（无参 factory）必须在此完成：之后引擎只按名字调方法、按索引读写属性。
-	asIScriptFunction *factory = type->GetFactoryByIndex(0);
+	// 不能直接取 GetFactoryByIndex(0)：脚本类若只声明了带参构造，索引 0 就是那个带参
+	// factory，Prepare/Execute 会在形参未赋值的情况下跑出一个"看似成功"的错误对象。
+	asIScriptFunction *factory = nullptr;
+	for (asUINT i = 0; i < type->GetFactoryCount(); i++) {
+		asIScriptFunction *candidate = type->GetFactoryByIndex(i);
+		if (candidate != nullptr && candidate->GetParamCount() == 0) {
+			factory = candidate;
+			break;
+		}
+	}
 	if (factory == nullptr) {
 		// 具名局部量承载 utf8 缓冲：临时 CharString 的 data() 不能跨语句使用（Task 3 同法）。
 		CharString default_decl = (String(type->GetName()) + "@ " + String(type->GetName()) + "()").utf8();
@@ -209,6 +218,10 @@ Variant::Type ASScriptInstance::get_property_type(const StringName &p_name, bool
 		case asTYPEID_DOUBLE:
 			return Variant::FLOAT;
 		default:
+			// 不支持的类型（对象/字符串等，M2 绑定层）不能报成"有效 NIL"。
+			if (r_is_valid != nullptr) {
+				*r_is_valid = false;
+			}
 			return Variant::NIL;
 	}
 }

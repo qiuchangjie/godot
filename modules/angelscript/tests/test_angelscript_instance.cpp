@@ -172,3 +172,67 @@ void as_instance_signature_mismatch_is_not_exposed() {
 
 	memdelete(node);
 }
+
+void as_instance_requires_default_constructor() {
+	// 只声明带参构造时 AngelScript 不会自动生成默认构造；instance_create() 必须返回 nullptr，
+	// 而不是交出一个后续任何方法调用都会失败的"哑实例"。
+	Ref<ASScript> script = _make_script("no_default_ctor",
+			"\tint value = 0;\n"
+			"\tno_default_ctor(int v) { value = v; }");
+	REQUIRE(script.is_valid());
+	if (!script.is_valid()) {
+		return;
+	}
+	REQUIRE(script->is_valid());
+	CHECK(script->instance_create(nullptr) == nullptr);
+}
+
+void as_instance_scalar_properties_round_trip() {
+	Ref<ASScript> script = _make_script("scalar_holder",
+			"\tbool flag = false;\n"
+			"\tint32 count = 0;\n"
+			"\tint64 big = 0;\n"
+			"\tfloat ratio = 0.0f;\n"
+			"\tdouble precise = 0.0;\n");
+	REQUIRE(script.is_valid());
+	if (!script.is_valid()) {
+		return;
+	}
+	REQUIRE(script->is_valid());
+	if (!script->is_valid()) {
+		return;
+	}
+
+	Node *node = memnew(Node);
+	ScriptInstance *instance = _attach_instance(script, node);
+	REQUIRE(instance != nullptr);
+	if (instance == nullptr) {
+		memdelete(node);
+		return;
+	}
+
+	CHECK(instance->set("flag", Variant(true)));
+	CHECK(instance->set("count", Variant((int64_t)-7)));
+	CHECK(instance->set("big", Variant((int64_t)9000000000LL)));
+	CHECK(instance->set("ratio", Variant(0.5)));
+	CHECK(instance->set("precise", Variant(1.25)));
+
+	Variant value;
+	REQUIRE(instance->get("flag", value));
+	CHECK(value == Variant(true));
+	REQUIRE(instance->get("count", value));
+	CHECK(value == Variant((int64_t)-7));
+	REQUIRE(instance->get("big", value));
+	CHECK(value == Variant((int64_t)9000000000LL));
+	REQUIRE(instance->get("ratio", value));
+	CHECK(value == Variant(0.5));
+	REQUIRE(instance->get("precise", value));
+	CHECK(value == Variant(1.25));
+
+	// 未知属性既没有类型，也不应被报成"有效"。
+	bool is_valid = true;
+	CHECK(instance->get_property_type("does_not_exist", &is_valid) == Variant::NIL);
+	CHECK_FALSE(is_valid);
+
+	memdelete(node);
+}

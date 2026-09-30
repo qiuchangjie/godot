@@ -54,12 +54,13 @@ void ASScriptLanguage::finish() {
 
 Vector<String> ASScriptLanguage::get_reserved_words() const {
 	static const char *words[] = {
-		"and", "abstract", "auto", "bool", "break", "case", "cast", "class",
-		"const", "continue", "default", "do", "double", "else", "enum", "false",
-		"final", "float", "for", "from", "funcdef", "if", "import", "in", "inout",
+		"and", "abstract", "auto", "bool", "break", "case", "cast", "catch", "class",
+		"const", "continue", "default", "do", "double", "else", "enum", "explicit",
+		"external", "false",
+		"final", "float", "for", "from", "funcdef", "get", "if", "import", "in", "inout",
 		"int", "int8", "int16", "int32", "int64", "interface", "is", "mixin",
 		"namespace", "not", "null", "or", "out", "override", "private", "protected",
-		"return", "shared", "string", "switch", "true", "try", "typedef", "uint",
+		"return", "set", "shared", "string", "switch", "true", "try", "typedef", "uint",
 		"uint8", "uint16", "uint32", "uint64", "void", "while", "xor", nullptr
 	};
 	Vector<String> out;

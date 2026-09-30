@@ -87,7 +87,7 @@ void as_engine_compiles_and_executes(const String &p_source, String *r_error, in
 	}
 
 	int executed_result = 0;
-	CHECK(ASEngine::execute(as->get_engine(), func, 0, nullptr, &executed_result) == OK);
+	CHECK(ASEngine::execute(as->get_engine(), func, &executed_result) == OK);
 	if (r_result != nullptr) {
 		*r_result = executed_result;
 	}

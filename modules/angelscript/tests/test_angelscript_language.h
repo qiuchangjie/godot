@@ -58,3 +58,19 @@ TEST_CASE("[AngelScript] module init/uninit is idempotent") {
 	CHECK(script_language_as != nullptr);
 	REQUIRE(ScriptServer::get_language_for_extension("as") != nullptr);
 }
+
+// 保留字列表覆盖 AngelScript 的关键字（漏词只会影响编辑器高亮/补全，不影响编译）。
+TEST_CASE("[AngelScript] language declares its reserved words") {
+	ScriptLanguage *lang = ScriptServer::get_language_for_extension("as");
+	REQUIRE(lang != nullptr);
+	if (lang == nullptr) {
+		return;
+	}
+	const Vector<String> words = lang->get_reserved_words();
+	CHECK(words.has("catch"));
+	CHECK(words.has("explicit"));
+	CHECK(words.has("external"));
+	CHECK(words.has("get"));
+	CHECK(words.has("set"));
+	CHECK(words.has("funcdef"));
+}
