@@ -39,6 +39,7 @@ void as_m3_nonowning_id_slot_probe();
 void as_m3_property_kind_from_static_type();
 void as_m3_id_slot_through_real_binding();
 void as_m3_released_entity_rejected();
+void as_m3_weak_handle_slot_holds_id();
 
 #ifndef ANGELSCRIPT_M3_HANDLE_TESTS_IMPL
 
@@ -56,6 +57,10 @@ TEST_CASE("[AngelScript][M3] id slot works through real binding") {
 
 TEST_CASE("[AngelScript][M3] released entity is rejected") {
 	as_m3_released_entity_rejected();
+}
+
+TEST_CASE("[AngelScript][M3] weak handle slot holds ObjectID") {
+	as_m3_weak_handle_slot_holds_id();
 }
 
 #endif // ANGELSCRIPT_M3_HANDLE_TESTS_IMPL

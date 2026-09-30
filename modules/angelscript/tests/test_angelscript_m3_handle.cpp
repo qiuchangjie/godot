@@ -124,6 +124,18 @@ void probe_free_node(asIScriptGeneric *p_gen) {
 	}
 }
 
+// 把参数槽原样当作整数读出（不解码）：用来说明"槽里到底放了什么"。
+void probe_handle_raw(asIScriptGeneric *p_gen) {
+	p_gen->SetReturnQWord((asQWORD)(uintptr_t)p_gen->GetArgObject(0));
+}
+
+// 拥有句柄的槽一定是裸指针，因此可以直接当 Object* 读它的真实 ObjectID，
+// 作为"槽里到底该是什么"的参照值（与静态类型无关，永远是对象自身的 ID）。
+void probe_owning_id(asIScriptGeneric *p_gen) {
+	Object *o = (Object *)p_gen->GetArgObject(0);
+	p_gen->SetReturnQWord(o != nullptr ? (asQWORD)(uint64_t)o->get_instance_id() : 0);
+}
+
 // 探针函数的幂等注册。以 probe_get_live 是否存在作为守卫：它们必须一次性全部注册，
 // 否则同一引擎上先后运行的用例会看到不一致的探针集合。
 void ensure_probe_functions(asIScriptEngine *p_engine) {
@@ -137,6 +149,8 @@ void ensure_probe_functions(asIScriptEngine *p_engine) {
 	p_engine->RegisterGlobalFunction("int probe_capture_slot(Node@)", asFUNCTION(probe_capture_slot), asCALL_GENERIC);
 	p_engine->RegisterGlobalFunction("Node@ probe_make_node()", asFUNCTION(probe_make_node), asCALL_GENERIC);
 	p_engine->RegisterGlobalFunction("void probe_free_node()", asFUNCTION(probe_free_node), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("int64 probe_handle_raw(Object@)", asFUNCTION(probe_handle_raw), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("int64 probe_owning_id(Resource@)", asFUNCTION(probe_owning_id), asCALL_GENERIC);
 }
 
 // 公共前置：初始化引擎、注册绑定与探针、编译模块、取出入口函数并准备好上下文。
@@ -201,6 +215,25 @@ bool run_int_expecting_exception(asIScriptEngine *p_engine, const String &p_sour
 	*r_exception = ctx->GetExceptionString() != nullptr ? String(ctx->GetExceptionString()) : String();
 	ctx->Release();
 	return true;
+}
+
+bool run_double(asIScriptEngine *p_engine, const String &p_source, const String &p_entry, double *r_out, String *r_err) {
+	asIScriptContext *ctx = nullptr;
+	if (!prepare_probe_context(p_engine, p_source, p_entry, &ctx, r_err)) {
+		return false;
+	}
+	if (ctx->Execute() != asEXECUTION_FINISHED) {
+		*r_err = String(ctx->GetExceptionString() != nullptr ? ctx->GetExceptionString() : "<no exception>");
+		ctx->Release();
+		return false;
+	}
+	*r_out = ctx->GetReturnDouble();
+	ctx->Release();
+	return true;
+}
+
+bool nearly(double p_a, double p_b) {
+	return p_a > p_b - 0.001 && p_a < p_b + 0.001;
 }
 
 } // namespace
@@ -336,4 +369,39 @@ void as_m3_released_entity_rejected() {
 	// 异常必须点名出错的成员，否则使用者无从定位是哪个句柄失效了（Task 4 的交付点）。
 	CHECK(exception.find("get_child_count") >= 0);
 	CHECK(exception.find("has been freed") >= 0);
+}
+
+// spec §3.3：向上转换必须按**目标** kind 重新编码槽值。
+// `Resource@` 是拥有句柄（槽=裸指针），`Object@` 是非拥有句柄（槽=ObjectID）；
+// `Object @o = r;` 会走 generic_upcast，必须把裸指针转成 ObjectID，且不得改变引用计数。
+void as_m3_weak_handle_slot_holds_id() {
+	// 断言 1：转换后非拥有槽里必须是 ObjectID，而不是原封不动的裸指针。
+	double slot_delta = 0.0;
+	String err;
+	const bool slot_ok = run_double(nullptr,
+			"double main() {"
+			"  Resource @r = Resource();"
+			"  int64 id = probe_owning_id(r);"
+			"  Object @o = r;"
+			"  return double(probe_handle_raw(o) - id);"
+			"}",
+			"main", &slot_delta, &err);
+	INFO("slot error: ", err);
+	REQUIRE(slot_ok);
+	CHECK(nearly(slot_delta, 0.0));
+
+	// 断言 2：弱引用不参与引用计数 —— 转换前后 RefCounted 的引用数不变。
+	double ref_delta = 0.0;
+	err = String();
+	const bool ref_ok = run_double(nullptr,
+			"double main() {"
+			"  Resource @r = Resource();"
+			"  double base = double(r.get_reference_count());"
+			"  Object @o = r;"
+			"  return double(r.get_reference_count()) - base;"
+			"}",
+			"main", &ref_delta, &err);
+	INFO("ref error: ", err);
+	REQUIRE(ref_ok);
+	CHECK(nearly(ref_delta, 0.0));
 }

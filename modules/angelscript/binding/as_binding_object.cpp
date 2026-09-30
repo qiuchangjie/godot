@@ -32,6 +32,12 @@ struct ASObjectFactoryBinding {
 	ASBindingKind object_kind = AS_KIND_OBJECT_NONOWNING;
 };
 
+// 继承边的元数据：向上转换必须知道源槽与目标槽各自的语义，才能决定是否重新编码。
+struct ASUpcastBinding {
+	ASBindingKind source_kind = AS_KIND_OBJECT_NONOWNING;
+	ASBindingKind target_kind = AS_KIND_OBJECT_NONOWNING;
+};
+
 // RegisterGlobalProperty 要求存储地址一直有效到引擎销毁，所以用 memnew 泄漏，
 // 不能把 HashMap 里的值取址（rehash 会让地址失效）。
 HashSet<StringName> g_global_names;
@@ -226,15 +232,22 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 	}
 
 	// 继承边：AS 不做跨级隐式转换，因此对每个已注册祖先各注册一条 opImplCast。
+	// 槽值必须按**目标**类型重新编码（Resource@ 的裸指针 → Object@ 的 ObjectID），
+	// 所以每条边都要带一份源/目标 kind 的元数据。
 	StringName ancestor = p_class.parent;
 	while (!ancestor.is_empty()) {
 		const CharString ancestor_data = String(ancestor).utf8();
 		if (p_engine->GetTypeInfoByName(ancestor_data.get_data()) == nullptr) {
 			break;
 		}
+		ASUpcastBinding *ub = memnew(ASUpcastBinding);
+		ub->source_kind = class_kind;
+		ub->target_kind = ClassDB::is_parent_class(ancestor, "RefCounted")
+				? AS_KIND_OBJECT_OWNING
+				: AS_KIND_OBJECT_NONOWNING;
 		const String decl = String(ancestor) + "@ opImplCast() const";
 		const CharString cdecl_utf8 = decl.utf8();
-		p_engine->RegisterObjectMethod(cname.get_data(), cdecl_utf8.get_data(), asFUNCTION(generic_upcast), asCALL_GENERIC);
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cdecl_utf8.get_data(), asFUNCTION(generic_upcast), asCALL_GENERIC), ub);
 		ancestor = ClassDB::get_parent_class_nocheck(ancestor);
 	}
 
@@ -401,6 +414,24 @@ void ASBindingObject::generic_release_noop(asIScriptGeneric *p_gen) {
 }
 
 void ASBindingObject::generic_upcast(asIScriptGeneric *p_gen) {
+	asIScriptFunction *fn = p_gen->GetFunction();
+	ASUpcastBinding *b = fn != nullptr ? static_cast<ASUpcastBinding *>(fn->GetUserData()) : nullptr;
+	if (b == nullptr) {
+		set_exception("AngelScript: upcast metadata missing");
+		return;
+	}
+	void *slot = p_gen->GetObject();
+	if (b->source_kind == AS_KIND_OBJECT_NONOWNING) {
+		// 非拥有源槽里已经是 ObjectID。目标只可能也是非拥有 —— 拥有类型不可能是
+		// 非拥有类型的祖先（Object/Node 都不派生自 RefCounted）。
+		if (b->target_kind != AS_KIND_OBJECT_NONOWNING) {
+			set_exception("AngelScript: invalid upcast target kind");
+			return;
+		}
+		p_gen->SetReturnObject(slot);
+		return;
+	}
+	// 拥有源槽里是裸指针：目标可能同样拥有（透传），也可能非拥有（折成 ObjectID）。
 	// 借 SetReturnObject 自己的 addref 交付一份引用，正好由接收变量接管。
-	p_gen->SetReturnObject(p_gen->GetObject());
+	p_gen->SetReturnObject(as_handle_encode((Object *)slot, b->target_kind));
 }

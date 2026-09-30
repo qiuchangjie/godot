@@ -13,6 +13,8 @@
 //   OWNING     槽 = 裸 Object*（对象派生自 RefCounted，由 AS 的 addref/release 保活）。
 //   NONOWNING  槽 = ObjectID（对象可能随时被 free()，每次解引用前必须经 ObjectDB 校验）。
 // 所有槽的读写都必须走下面这两个函数，不允许在别处直接强转。
+// 向上转换（opImplCast）同样必须按**目标** kind 重新编码：把 `Resource@`（裸指针）
+// 赋给 `Object@`（ObjectID 槽）时，槽值必须从指针换成 ID，不能原样透传。
 
 #include "as_binding_plan.h"
 #include "core/error/error_list.h"
