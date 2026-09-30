@@ -124,6 +124,9 @@ struct ASGodotStringObject {
 };
 
 static HashMap<String, ASGodotStringObject *> g_interned_strings;
+// 工厂指针集合：用于区分「字面量实参」（AS 直接压入工厂指针）与「变量实参」
+// （AS 压入保存指针的存储地址）。见 string_slot()。
+static HashSet<const ASGodotStringObject *> g_interned_string_ptrs;
 
 static const void *intern_string(const String &p_str) {
 	HashMap<String, ASGodotStringObject *>::Iterator it = g_interned_strings.find(p_str);
@@ -133,6 +136,7 @@ static const void *intern_string(const String &p_str) {
 	ASGodotStringObject *o = memnew(ASGodotStringObject);
 	o->str = p_str;
 	g_interned_strings.insert(p_str, o);
+	g_interned_string_ptrs.insert(o);
 	return o;
 }
 
@@ -300,7 +304,12 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 			continue;
 		}
 		MethodInfo mi = Variant::get_builtin_method_info(p_type, mn);
-		bool returns_void = (mi.return_val.type == Variant::NIL);
+		// NIL 返回值有两种语义：真正的 void，以及返回 Variant。后者由内省带上
+		// PROPERTY_USAGE_NIL_IS_VARIANT（见 variant_call.cpp get_method_info）。
+		// 若把 Variant 返回值误判为 void，脚本侧 `Variant r = a.pop_back();` 会因
+		// 数据源为 void 而报错，且副作用之外的返回值被静默丢弃。
+		bool returns_variant = (mi.return_val.type == Variant::NIL) && (mi.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT);
+		bool returns_void = (mi.return_val.type == Variant::NIL) && !returns_variant;
 		String ret = returns_void ? "void" : param_type_name(mi.return_val.type);
 		if (ret.is_empty()) {
 			continue;
@@ -561,10 +570,20 @@ Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 	return OK;
 }
 
-static const void *string_slot(asIScriptGeneric *p_gen, int p_index) {
-	// 对 `const string &in`，AS 的实参槽直接就是工厂字符串对象指针（string 值在 VM 里就是该指针），
-	// 而 GetArgObject 已经做过一次解引用，不能再解一次。
-	return (const void *)p_gen->GetArgObject(p_index);
+// `const string &in` 的实参在 AS 侧有两种形态（见 as_compiler.cpp 的 isRefSafe 处理）：
+//  - 字面量：asBC_PGA 直接把工厂指针作为实参压入，不能再解引用；
+//  - 变量：压入的是保存工厂指针的存储地址，必须解一次引用。
+// 用驻留指针集合区分二者，得到统一的工厂指针。
+static const ASGodotStringObject *string_slot(asIScriptGeneric *p_gen, int p_index) {
+	const void *arg = p_gen->GetArgObject(p_index);
+	if (!arg) {
+		return nullptr;
+	}
+	const ASGodotStringObject *o = (const ASGodotStringObject *)arg;
+	if (g_interned_string_ptrs.has(o)) {
+		return o; // 字面量。
+	}
+	return *(const ASGodotStringObject *const *)arg; // 变量：存储地址解一次。
 }
 
 void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
@@ -681,7 +700,7 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 				set_exception("angelscript: null self in string assign");
 				return;
 			}
-			*(const void **)self = *(const void **)p_gen->GetArgObject(0);
+			*(const void **)self = string_slot(p_gen, 0);
 			p_gen->SetReturnAddress(self);
 			return;
 		}
@@ -739,8 +758,8 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 		case VT_NOOP:
 			return;
 		case VT_CTOR_FROM_STRING: {
-			const ASGodotStringObject *o = (const ASGodotStringObject *)string_slot(p_gen, 0);
-			new (self) Variant(Variant(o->str));
+			const ASGodotStringObject *o = string_slot(p_gen, 0);
+			new (self) Variant(Variant(o ? o->str : String()));
 			return;
 		}
 		case VT_STRING_DEFAULT: {

@@ -178,3 +178,58 @@ void as_binding_value_types_string_interop() {
 	}
 	CHECK(nearly(out, 3.0)); // String -> string 隐式构造 + string.length()。
 }
+
+void as_binding_value_types_string_variable_forms() {
+	double out = 0.0;
+	// 变量 → 变量的拷贝构造（`string(const string &in)`）：验证 string 实参的指针约定。
+	if (!run_double("double main() { string a = \"abc\"; string b = a; return double(b.length()); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 3.0));
+
+	// opAssign 的变量实参形态。
+	if (!run_double("double main() { string a = \"abc\"; string b; b = a; return double(b.length()); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 3.0));
+
+	// opAssign 的字面量实参形态。
+	if (!run_double("double main() { string b; b = \"xyz\"; return double(b.length()); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 3.0));
+
+	// 字面量构造后再自赋值，确保存储不是指向临时量。
+	if (!run_double("double main() { string a = \"abcd\"; string b = a; b = a; return double(b.length()); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 4.0));
+
+	// Godot String 的拷贝构造与赋值（值类型存储为 Variant，走 VT_CTOR_COPY/VT_ASSIGN）。
+	if (!run_double("double main() { String s = \"abc\"; String t = s; t = s; return double(t.length()); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 3.0));
+}
+
+void as_binding_value_types_builtin_variant_return() {
+	double out = 0.0;
+	// Array.pop_back 返回 Variant（NIL + PROPERTY_USAGE_NIL_IS_VARIANT）：必须真正带回返回值，
+	// 而不是被声明成 void 后静默丢弃。
+	if (!run_double("double main() { Array a; a.append(Variant(7)); Variant r = a.pop_back(); return double(r); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 7.0));
+
+	// 容器确实被修改（pop_back 的副作用）。
+	if (!run_double("double main() { Array a; a.append(Variant(7)); a.pop_back(); return double(a.size()); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 0.0));
+
+	// Dictionary.get 同样返回 Variant。
+	if (!run_double("double main() { Dictionary d; d[Variant(\"k\")] = Variant(5); Variant r = d.get(Variant(\"k\"), Variant(0)); return double(r); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 5.0));
+}
