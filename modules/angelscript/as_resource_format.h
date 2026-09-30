@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_types.cpp                                                    */
+/*  as_resource_format.h                                                  */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,58 +28,28 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "register_types.h"
-
-#include "as_resource_format.h"
-#include "as_script_language.h"
+#pragma once
 
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 
-// 本模块的测试用例写在 tests/*.h 里：modules/SCsub 会把它们汇进生成的
-// modules/modules_tests.gen.h，再由 tests/test_main.cpp 统一 include。
-// 此处不要再手工 include 测试头，否则用例会被注册两次。
+// 加载器/保存器与 GDScript 的同类实现一样用 GDSOFTCLASS：它们不进 ClassDB，
+// 只需要 Object::cast_to() 能把它们同基类区分开（Ref<T> 的转换依赖这一点）。
+class ASResourceFormatLoaderASScript : public ResourceFormatLoader {
+	GDSOFTCLASS(ASResourceFormatLoaderASScript, ResourceFormatLoader);
 
-ASScriptLanguage *script_language_as = nullptr;
-Ref<ASResourceFormatLoaderASScript> resource_loader_as;
-Ref<ASResourceFormatSaverASScript> resource_saver_as;
+public:
+	virtual Ref<Resource> load(const String &p_path, const String &p_original_path = "", Error *r_error = nullptr, bool p_use_sub_threads = false, float *r_progress = nullptr, CacheMode p_cache_mode = CACHE_MODE_REUSE) override;
+	virtual void get_recognized_extensions(List<String> *p_extensions) const override;
+	virtual bool handles_type(const String &p_type) const override;
+	virtual String get_resource_type(const String &p_path) const override;
+};
 
-void initialize_angelscript_module(ModuleInitializationLevel p_level) {
-	if (p_level != MODULE_INITIALIZATION_LEVEL_SERVERS) {
-		return;
-	}
-	if (script_language_as != nullptr) {
-		return; // 幂等：编辑器重启流程可能重复调用。
-	}
+class ASResourceFormatSaverASScript : public ResourceFormatSaver {
+	GDSOFTCLASS(ASResourceFormatSaverASScript, ResourceFormatSaver);
 
-	script_language_as = memnew(ASScriptLanguage);
-	ScriptServer::register_language(script_language_as);
-
-	resource_loader_as.instantiate();
-	ResourceLoader::add_resource_format_loader(resource_loader_as);
-	resource_saver_as.instantiate();
-	ResourceSaver::add_resource_format_saver(resource_saver_as);
-}
-
-void uninitialize_angelscript_module(ModuleInitializationLevel p_level) {
-	if (p_level != MODULE_INITIALIZATION_LEVEL_SERVERS) {
-		return;
-	}
-
-	if (script_language_as) {
-		ScriptServer::unregister_language(script_language_as);
-		memdelete(script_language_as);
-		script_language_as = nullptr;
-	}
-
-	// 部分启动流程（如 Main::test_setup）会在 SERVERS 期先反初始化再重新初始化模块，
-	// 第二次反初始化时这里的引用已被清空；加空值守卫，避免无意义的 ERR_PRINT。
-	if (resource_loader_as.is_valid()) {
-		ResourceLoader::remove_resource_format_loader(resource_loader_as);
-		resource_loader_as.unref();
-	}
-	if (resource_saver_as.is_valid()) {
-		ResourceSaver::remove_resource_format_saver(resource_saver_as);
-		resource_saver_as.unref();
-	}
-}
+public:
+	virtual Error save(const Ref<Resource> &p_resource, const String &p_path, uint32_t p_flags = 0) override;
+	virtual void get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const override;
+	virtual bool recognize(const Ref<Resource> &p_resource) const override;
+};

@@ -1,0 +1,276 @@
+/**************************************************************************/
+/*  as_script.cpp                                                         */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#include "as_script.h"
+
+#include "as_engine.h"
+#include "as_script_language.h"
+
+#include "core/object/class_db.h"
+
+static const char *AS_BASE_DIRECTIVE = "// godot_base:";
+
+// AngelScript 的模块名直接复用资源路径：热更时同一路径整体替换（spec §7），
+// 且路径天然唯一，不需要额外的模块名分配表。
+ASScript::ASScript() {
+}
+
+ASScript::~ASScript() {
+	clear();
+}
+
+void ASScript::clear() {
+	valid = false;
+	compile_error = String();
+	class_name = StringName();
+	instance_base_type = StringName();
+	if (!module_name.is_empty() && ASEngine::get_singleton()->is_initialized()) {
+		asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
+		CharString module_cstr = module_name.utf8();
+		if (engine->GetModule(module_cstr.get_data(), asGM_ONLY_IF_EXISTS) != nullptr) {
+			engine->DiscardModule(module_cstr.get_data());
+		}
+	}
+	module_name = String();
+}
+
+String ASScript::get_class_name_for_path(const String &p_path) {
+	return p_path.get_file().get_basename();
+}
+
+asITypeInfo *ASScript::_find_script_class(asIScriptModule *p_module, const String &p_class_name) {
+	if (p_module == nullptr) {
+		return nullptr;
+	}
+	for (asUINT i = 0; i < p_module->GetObjectTypeCount(); i++) {
+		asITypeInfo *type = p_module->GetObjectTypeByIndex(i);
+		if (type == nullptr || !(type->GetFlags() & asOBJ_SCRIPT_OBJECT)) {
+			continue;
+		}
+		if (type->GetName() != nullptr && String(type->GetName()) == p_class_name) {
+			return type;
+		}
+	}
+	return nullptr;
+}
+
+bool ASScript::compile_source(const String &p_source, const String &p_path, String *r_error) {
+	clear();
+
+	if (p_path.is_empty()) {
+		compile_error = "AngelScript requires a resource path to derive the class name";
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return false;
+	}
+
+	// 统一行尾并剥掉 UTF-8 BOM：Godot 内部字符串是 UTF-32，BOM 会变成首字符 U+FEFF，
+	// 不剥掉就会让第一行的 `// godot_base:` 指令扫描失效。
+	// 不能用 `String::utf8("\xEF\xBB\xBF", 3)` 判定：parse_utf8/append_utf8 遇到开头的 BOM 会
+	// 直接跳过（见 core/string/ustring.cpp 中 "just skip it" 注释），该表达式恒为空串，而空串是
+	// 任意字符串的前缀（begins_with("") 恒真），会无条件剥掉首字符。这里直接比对码点。
+	String src = p_source;
+	src = src.replace("\r\n", "\n");
+	if (!src.is_empty() && src[0] == char32_t(0xFEFF)) {
+		src = src.substr(1);
+	}
+
+	const String expected_class = get_class_name_for_path(p_path);
+	if (expected_class.is_empty()) {
+		compile_error = "cannot derive class name from path: " + p_path;
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return false;
+	}
+
+	StringName base_type;
+	bool found_directive = false;
+	Vector<String> lines = src.split("\n");
+	const int scan_lines = MIN(lines.size(), 10);
+	for (int i = 0; i < scan_lines; i++) {
+		String line = lines[i].strip_edges();
+		if (line.begins_with(AS_BASE_DIRECTIVE)) {
+			base_type = StringName(line.substr(String(AS_BASE_DIRECTIVE).length()).strip_edges());
+			found_directive = true;
+			break;
+		}
+	}
+
+	if (!found_directive) {
+		compile_error = String("missing '") + AS_BASE_DIRECTIVE + " <Type>' directive in the first 10 lines";
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return false;
+	}
+	if (!ClassDB::class_exists(base_type)) {
+		compile_error = "unknown base type: " + String(base_type);
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return false;
+	}
+
+	ASEngine *as = ASEngine::get_singleton();
+	if (!as->ensure_initialized()) {
+		compile_error = "AngelScript engine is not available";
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return false;
+	}
+
+	const String new_module_name = p_path;
+	String error;
+	if (!as->compile_module(new_module_name, src, &error)) {
+		compile_error = error;
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return false;
+	}
+
+	module_name = new_module_name;
+	asITypeInfo *type = _find_script_class(get_module(), expected_class);
+	if (type == nullptr) {
+		// 先 clear() 丢弃刚编译出来的模块，再写错误信息：clear() 会把 compile_error 清空，
+		// 顺序颠倒会让 r_error 变成空串。
+		clear();
+		compile_error = "script class '" + expected_class + "' (must equal the file name) was not found in " + p_path;
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return false;
+	}
+
+	source_code = src;
+	class_name = expected_class;
+	instance_base_type = base_type;
+	valid = true;
+	return true;
+}
+
+asIScriptModule *ASScript::get_module() const {
+	if (module_name.is_empty() || !ASEngine::get_singleton()->is_initialized()) {
+		return nullptr;
+	}
+	CharString module_cstr = module_name.utf8();
+	return ASEngine::get_singleton()->get_engine()->GetModule(module_cstr.get_data(), asGM_ONLY_IF_EXISTS);
+}
+
+asITypeInfo *ASScript::get_type_info() const {
+	if (!valid) {
+		return nullptr;
+	}
+	return _find_script_class(get_module(), class_name);
+}
+
+Error ASScript::reload(bool p_keep_state) {
+	if (source_code.is_empty()) {
+		return ERR_INVALID_DATA;
+	}
+	String error;
+	if (!compile_source(source_code, get_path().is_empty() ? module_name : get_path(), &error)) {
+		return ERR_PARSE_ERROR;
+	}
+	return OK;
+}
+
+bool ASScript::has_method(const StringName &p_method) const {
+	asITypeInfo *type = get_type_info();
+	if (type == nullptr) {
+		return false;
+	}
+	CharString name = String(p_method).utf8();
+	return type->GetMethodByName(name.get_data(), true) != nullptr;
+}
+
+ScriptLanguage *ASScript::get_language() const {
+	return ASScriptLanguage::get_singleton();
+}
+
+void ASScript::get_script_method_list(List<MethodInfo> *p_list) const {
+	asITypeInfo *type = get_type_info();
+	if (type == nullptr) {
+		return;
+	}
+	for (asUINT i = 0; i < type->GetMethodCount(); i++) {
+		asIScriptFunction *func = type->GetMethodByIndex(i, false);
+		if (func == nullptr || func->GetName() == nullptr) {
+			continue;
+		}
+		MethodInfo mi;
+		mi.name = StringName(func->GetName());
+		p_list->push_back(mi);
+	}
+}
+
+void ASScript::get_script_property_list(List<PropertyInfo> *p_list) const {
+	asITypeInfo *type = get_type_info();
+	if (type == nullptr) {
+		return;
+	}
+	for (asUINT i = 0; i < type->GetPropertyCount(); i++) {
+		// asITypeInfo 的枚举式属性查询（asIScriptObject 上的 GetPropertyName/GetPropertyTypeId 是实例接口，此处不可用）。
+		const char *prop_name = nullptr;
+		int type_id = 0;
+		if (type->GetProperty(i, &prop_name, &type_id) < 0 || prop_name == nullptr) {
+			continue;
+		}
+		Variant::Type vt = Variant::NIL;
+		switch (type_id & ~asTYPEID_OBJHANDLE) {
+			case asTYPEID_BOOL:
+				vt = Variant::BOOL;
+				break;
+			case asTYPEID_INT32:
+				vt = Variant::INT;
+				break;
+			case asTYPEID_INT64:
+				vt = Variant::INT;
+				break;
+			case asTYPEID_FLOAT:
+				vt = Variant::FLOAT;
+				break;
+			case asTYPEID_DOUBLE:
+				vt = Variant::FLOAT;
+				break;
+			default:
+				continue; // 本阶段只支持内建标量属性；对象/字符串属性留待绑定层（M2）。
+		}
+		p_list->push_back(PropertyInfo(vt, StringName(prop_name)));
+	}
+}
+
+ScriptInstance *ASScript::instance_create(Object *p_this) {
+	// Task 4 接管：返回 memnew(ASScriptInstance(Ref<ASScript>(this), p_this))。
+	return nullptr;
+}
