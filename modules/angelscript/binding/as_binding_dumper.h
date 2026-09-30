@@ -36,7 +36,12 @@
 #include "core/string/ustring.h"
 
 // API 声明转储（spec §3.8.7）：把绑定计划渲染成 `.d.as` 声明文件 + 未绑定清单。
-// 与运行期注册器消费同一份 plan，因此产物里的类型名/枚举名/方法签名与引擎实际注册完全一致。
+// 与运行期注册器消费同一份 plan，因此产物里的类型名/枚举名/方法签名与引擎实际注册一致，
+// 但有两处已知偏差：
+//  1. plan 的类成员集含整条继承链（AS 不支持注册类型之间的继承，只能靠 opImplCast），
+//     所以继承成员会在每个派生类下重复声明（`get_class()` 同时出现在 Object 与 Node 下）。
+//  2. 运行期对「属性访问器/常量/枚举名已被祖先占用」的项做幂等跳过（成员通常仍可经祖先
+//     句柄访问），这些跳过项不回填 unbound，dump 仍会声明它们（评审 I1，未定位到触发类）。
 class ASBindingDumper {
 	static String _render_declaration(const ASBindingPlan &p_plan);
 	static String _render_unbound(const ASBindingPlan &p_plan);
