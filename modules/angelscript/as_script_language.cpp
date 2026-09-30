@@ -30,6 +30,8 @@
 
 #include "as_script_language.h"
 
+#include "as_engine.h"
+
 ASScriptLanguage *ASScriptLanguage::singleton = nullptr;
 
 ASScriptLanguage::ASScriptLanguage() {
@@ -41,11 +43,13 @@ ASScriptLanguage::~ASScriptLanguage() {
 }
 
 void ASScriptLanguage::init() {
-	// 第一阶段不在此初始化 AS 引擎：见 Task 2，ASEngine 采用懒初始化，
-	// 这样 --test / headless 路径（不调用 ScriptServer::init_languages()）也能工作。
+	// ASEngine 自身也是懒初始化的，这里只是让引擎在语言被正式启用时提前就绪
+	// （--test / headless 路径不会走这里，靠 ASEngine::get_singleton() 兜底）。
+	ASEngine::get_singleton()->ensure_initialized();
 }
 
 void ASScriptLanguage::finish() {
+	ASEngine::get_singleton()->shutdown();
 }
 
 Vector<String> ASScriptLanguage::get_reserved_words() const {

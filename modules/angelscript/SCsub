@@ -6,8 +6,33 @@ Import("env_modules")
 
 env_as = env_modules.Clone()
 
+env_as.Prepend(CPPPATH=["#modules/angelscript/thirdparty/angelscript/include"])
+
+# AngelScript 2.38.0 官方编译器要求（doc_compile_lib）：
+# - MSVC x64 无法用内联汇编，必须用 ml64 单独汇编 as_callfunc_x64_msvc_asm.asm
+#   （vcvars64.bat 会把 ml64.exe 放进 PATH）。
+# - GNUC 系编译器必须关闭严格别名优化。
+env_angelscript = env_as.Clone()
+if env.msvc:
+    if env["arch"] == "x86_64":
+        asm_obj = env.Command(
+            "thirdparty/angelscript/source/as_callfunc_x64_msvc_asm.obj",
+            "thirdparty/angelscript/source/as_callfunc_x64_msvc_asm.asm",
+            "ml64 /c /nologo /W3 /Zi /Fo$TARGET /Ta $SOURCE",
+        )
+        env.modules_sources.append(asm_obj)
+else:
+    # 非 MSVC 平台同样需要汇编 as_callfunc_x64_gcc.S，本阶段只做桌面 MSVC，留待平台里程碑。
+    env_angelscript.Append(CCFLAGS=["-fno-strict-aliasing"])
+
+# 第三方代码不由我们维护，不参与引擎的告警策略。
+env_angelscript.disable_warnings()
+env_angelscript.add_source_files(env.modules_sources, "thirdparty/angelscript/source/*.cpp")
+
 env_as.add_source_files(env.modules_sources, "*.cpp")
 
-# 测试用例写在 tests/*.h：modules/SCsub 会把各模块的 tests/*.h 汇进生成的
-# modules/modules_tests.gen.h，再由 tests/test_main.cpp 统一 include。
-# 不要在此编译 tests/*.cpp——那样写出来的 TEST_CASE 不会进入最终二进制。
+if env["tests"]:
+    # 用例注册写在 tests/*.h：modules/modules_tests.gen.h 会把各模块的 tests/*.h
+    # include 进 tests/test_main.cpp，用例才会进入最终二进制。
+    # 这里的 tests/*.cpp 只放用例辅助实现，编进 module_angelscript.lib 后由链接器按需拉入。
+    env_as.add_source_files(env.modules_sources, "./tests/*.cpp")
