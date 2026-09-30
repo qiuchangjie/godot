@@ -31,6 +31,11 @@ env_angelscript.add_source_files(env.modules_sources, "thirdparty/angelscript/so
 
 env_as.add_source_files(env.modules_sources, "*.cpp")
 
+# binding/ 子目录（M2 绑定层）；同时把模块根加入 include 路径，
+# 让模块内跨目录 include 写成 "binding/as_binding_*.h"。
+env_as.Prepend(CPPPATH=["#modules/angelscript"])
+env_as.add_source_files(env.modules_sources, "binding/*.cpp")
+
 if env["tests"]:
     # 用例注册写在 tests/*.h：modules/modules_tests.gen.h 会把各模块的 tests/*.h
     # include 进 tests/test_main.cpp，用例才会进入最终二进制。
