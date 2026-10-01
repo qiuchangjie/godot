@@ -74,12 +74,47 @@ class main {
 }
 ```
 
+## 信号（M3）
+
+脚本类用 `signal_<name>` 命名约定声明信号：方法名以 `signal_` 开头即视为信号声明。此类方法不会出现在普通方法表里（`has_method("signal_xxx")` 为假、`get_script_method_list()` 也不含它），只能经 `Object.connect` / `Object.emit_signal` 使用。信号参数只支持可映射到 `Variant` 的类型（标量与内建值类型）；含对象参数或其它不支持类型的声明会被整体忽略。
+
+```angelscript
+// godot_base: Node
+class signal_demo {
+	void signal_ping(int value) {}
+
+	void _ready() {
+		// 连接：as_callable(obj, method) 生成宿主方法 Callable，交给 Object.connect。
+		// Object.connect 的形参是 StringName、且 flags 形参没有默认值，需显式转换并补 0。
+		as_self().connect(StringName("ping"), as_callable(as_self(), "on_ping"), 0);
+
+		// 发射：as_emit_signal(obj, name, args)，args 是信号实参数组。
+		Array args;
+		args.push_back(Variant(7));
+		as_emit_signal(as_self(), "ping", args);
+	}
+
+	void on_ping(int value) {
+		as_log_int(int(value));
+	}
+}
+```
+
+- `as_self()`：取当前正在执行的脚本实例所承载的节点（`ASScriptInstance::get_owner()`，弱句柄）。AS 脚本类不是 `Node` 子类，脚本内需要用它才能引用宿主节点、进而连接或发射自己声明的信号。
+- `as_emit_signal(obj, name, args)`：发射 `obj` 上名为 `name` 的信号，`args` 必须是 `Array`，其元素按顺序作为信号实参。`obj` 为非拥有句柄，为空或已释放时抛 `AngelScript: as_emit_signal: target object is null or has been freed`。
+- `as_callable(obj, method)`：把 `obj` 上的方法包装成 `Callable`，配合 `Object.connect` 接收信号。
+- 已知限制：信号（以及任何宿主 `Callable`）回调的**参数只支持标量**——`ASEngine::call_function` 目前只编组 `bool` / `int64` / `double`，带对象、字符串或其它内建值类型参数的信号回调无法派发。需要传递复杂数据时，请让回调只接收标量句柄 / ID，或改用属性通道。
+- 已知限制：带默认值形参的 Godot 方法在 AS 侧没有默认值，必须显式传全部实参，例如 `connect(StringName("ping"), as_callable(as_self(), "on_ping"), 0)`。
+
 ## 内建 API
 
 | 声明 | 说明 |
 | --- | --- |
 | `void as_log_int(int value)` | 把整数打印到 stdout（阶段一引入的宿主调试桩）。 |
 | `void as_log_string(const String &in value)` | 把 Godot `String` 打印到 stdout。内建 `print` 是 vararg、M2 不可绑定，热更脚本的字符串输出暂用这个出口。 |
+| `Object @as_self()` | 取当前脚本实例承载的节点（弱句柄），见「信号（M3）」。 |
+| `void as_emit_signal(Object @obj, const String &in name, const Array &in args)` | 发射 `obj` 上的信号 `name`，`args` 为实参数组。 |
+| `Callable as_callable(Object @obj, const String &in method)` | 把 `obj` 上的方法包装成 `Callable`，配合 `Object.connect` 接收信号。 |
 
 内建函数统一使用泛型调用约定（`asCALL_GENERIC`），与绑定层保持同一形态。`as_log_string` 在绑定层值类型注册之后才注册，因为它用的是绑定层的 Godot `String` 值类型。
 
@@ -121,10 +156,11 @@ bin\godot.windows.editor.x86_64.console.exe --headless --dump-angelscript-api <�
 bin\godot.windows.editor.x86_64.console.exe --headless --path modules/angelscript/tests/e2e_project --quit-after 2
 ```
 
-预期退出码为 0，stdout 依次出现 `Node`、`1`、`3`、`M3:handle-ok`、`42`：
+预期退出码为 0，stdout 依次出现 `Node`、`1`、`3`、`M3:handle-ok`、`7`、`42`：
 
 - `42`：`main.as` 的 `_ready()` 调用 `as_log_int`（阶段一通道）。
-- `M3:handle-ok`：`handle_demo.as` 演示 M3 弱句柄（`Object@`）赋值后仍指向存活对象（子节点 `_ready()` 先于父节点，故它出现在 `42` 之前）。
+- `7`：`signal_demo.as` 演示 M3 信号闭环——`_ready()` 里 `as_self().connect(..., as_callable(...))` 连接自己声明的 `signal_ping`，再 `as_emit_signal(...)` 发射，回调 `on_ping(int)` 打印 `7`（子节点 `_ready()` 先于父节点，故它在 `42` 之前）。
+- `M3:handle-ok`：`handle_demo.as` 演示 M3 弱句柄（`Object@`）赋值后仍指向存活对象。
 - `Node` / `1` / `3`：`binding_demo.as` 用绑定层 API 演示 `Node.get_class()` 的 String 编组、`add_child` 的对象参数、`get_child_count` 的 int64 返回值与 `process_mode` 属性读写。
 
 没有 `Failed to load AngelScript` / `Failed loading resource` 之类的错误。这一次运行覆盖：`.as` 加载器注册、`.tscn` 按路径挂载脚本、`get_instance_base_type()` 生效、`_ready` 经 `GDVIRTUAL` → `callp()` 派发、内建 API 与绑定层均可调用。

@@ -33,9 +33,14 @@
 #include "tests/test_macros.h"
 
 void as_m3_signal_declared_without_instance();
+void as_m3_signal_emit_delivered();
 
 #ifndef ANGELSCRIPT_M3_SIGNAL_TESTS_IMPL
 TEST_CASE("[AngelScript][M3] signal declared without instance") {
 	as_m3_signal_declared_without_instance();
+}
+
+TEST_CASE("[AngelScript][M3] signal emit delivered") {
+	as_m3_signal_emit_delivered();
 }
 #endif // ANGELSCRIPT_M3_SIGNAL_TESTS_IMPL

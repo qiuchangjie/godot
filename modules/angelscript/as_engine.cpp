@@ -30,7 +30,9 @@
 
 #include "as_engine.h"
 
+#include "as_script_instance.h"
 #include "binding/as_binding_decl.h"
+#include "binding/as_binding_object.h"
 #include "binding/as_binding_registry.h"
 #include "core/object/object.h"
 #include "core/string/print_string.h"
@@ -65,6 +67,58 @@ static void _as_log_string(asIScriptGeneric *p_generic) {
 	print_line(String(as_binding_marshal_arg(p_generic, 0, AS_KIND_VALUE)));
 }
 
+// M3 信号链（设计 §5）的三个宿主内建。AS 脚本类不是 Node 子类，脚本内无法引用承载它的
+// 节点，因此必须由宿主提供取 owner 的入口，信号才有"发射者"。
+
+// 取当前脚本实例承载的节点（非拥有句柄）。不在脚本执行期时返回 null。
+static void _as_self(asIScriptGeneric *p_generic) {
+	ASScriptInstance *inst = as_current_script_instance();
+	Object *owner = (inst != nullptr) ? inst->get_owner() : nullptr;
+	p_generic->SetReturnObject(as_handle_encode(owner, AS_KIND_OBJECT_NONOWNING));
+}
+
+// 在指定对象上发射信号；args 是实参的 Array（可为空）。实参存储必须在 emit_signalp
+// 返回前保持有效，故先把 Array 拷进本地 Vector，再把指针数组交给引擎。
+static void _as_emit_signal(asIScriptGeneric *p_generic) {
+	Object *obj = as_handle_decode(p_generic->GetArgObject(0), AS_KIND_OBJECT_NONOWNING);
+	if (obj == nullptr) {
+		asIScriptContext *ctx = asGetActiveContext();
+		if (ctx != nullptr) {
+			ctx->SetException("AngelScript: as_emit_signal: target object is null or has been freed");
+		}
+		return;
+	}
+	const Variant name_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
+	const Variant args_v = as_binding_marshal_arg(p_generic, 2, AS_KIND_VALUE);
+	if (args_v.get_type() != Variant::ARRAY) {
+		asIScriptContext *ctx = asGetActiveContext();
+		if (ctx != nullptr) {
+			ctx->SetException("AngelScript: as_emit_signal: args must be an Array");
+		}
+		return;
+	}
+	const Array args = args_v;
+	Vector<Variant> storage;
+	storage.resize(args.size());
+	for (int i = 0; i < args.size(); i++) {
+		storage.write[i] = args[i];
+	}
+	Vector<const Variant *> pointers;
+	pointers.resize(storage.size());
+	for (int i = 0; i < storage.size(); i++) {
+		pointers.write[i] = &storage[i];
+	}
+	obj->emit_signalp(StringName(name_v), pointers.size() > 0 ? pointers.ptrw() : nullptr, pointers.size());
+}
+
+// 生成指向宿主对象方法的 Callable，供 Object.connect 接收脚本信号。
+static void _as_callable(asIScriptGeneric *p_generic) {
+	Object *obj = as_handle_decode(p_generic->GetArgObject(0), AS_KIND_OBJECT_NONOWNING);
+	const Variant method_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
+	const Variant ret = Callable(obj, StringName(method_v));
+	as_binding_marshal_return(p_generic, AS_KIND_VALUE, ret);
+}
+
 bool ASEngine::ensure_initialized() {
 	if (engine != nullptr) {
 		return true;
@@ -97,6 +151,14 @@ void ASEngine::_initialize_binding() {
 	// 才能注册（否则 AS 会因未知类型报错并把引擎标记为配置错误且不可恢复）。
 	const int result = engine->RegisterGlobalFunction("void as_log_string(const String &in value)", asFUNCTION(_as_log_string), asCALL_GENERIC);
 	ERR_FAIL_COND_MSG(result < 0, vformat("Failed to register the builtin function 'as_log_string' (error %d).", result));
+
+	// M3 信号链的内建：Object/String/Array/Callable 此时都已由绑定层注册完毕。
+	const int result_self = engine->RegisterGlobalFunction("Object @as_self()", asFUNCTION(_as_self), asCALL_GENERIC);
+	ERR_FAIL_COND_MSG(result_self < 0, vformat("Failed to register the builtin function 'as_self' (error %d).", result_self));
+	const int result_emit = engine->RegisterGlobalFunction("void as_emit_signal(Object @obj, const String &in name, const Array &in args)", asFUNCTION(_as_emit_signal), asCALL_GENERIC);
+	ERR_FAIL_COND_MSG(result_emit < 0, vformat("Failed to register the builtin function 'as_emit_signal' (error %d).", result_emit));
+	const int result_callable = engine->RegisterGlobalFunction("Callable as_callable(Object @obj, const String &in method)", asFUNCTION(_as_callable), asCALL_GENERIC);
+	ERR_FAIL_COND_MSG(result_callable < 0, vformat("Failed to register the builtin function 'as_callable' (error %d).", result_callable));
 }
 
 bool ASEngine::compile_module(const String &p_name, const String &p_source, String *r_error) {
@@ -173,8 +235,27 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 	ERR_FAIL_NULL_V(p_func, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(p_argc != (int)p_func->GetParamCount(), ERR_INVALID_PARAMETER);
 
-	if (p_context->Prepare(p_func) < 0) {
+	// M3：信号/回调会在脚本执行过程中再次进入脚本（宿主 Callable → Object::callp →
+	// 本函数），此时复用的 asIScriptContext 仍处于 asEXECUTION_ACTIVE，直接 Prepare
+	// 会返回 asCONTEXT_ACTIVE 导致调用失败（表现为「信号回调 Method not found」）。
+	// 先用 PushState() 把外层执行状态压栈、让上下文回到可 Prepare 的状态，调用结束后
+	// 再用 PopState() 还原；PopState() 内部会负责清理本次调用产生的栈。
+	const bool nested = p_context->GetState() == asEXECUTION_ACTIVE;
+	if (nested && p_context->PushState() < 0) {
 		return ERR_CANT_CREATE;
+	}
+	// 统一收尾：嵌套调用的清理交给 PopState()，非嵌套维持原行为（Unprepare）。
+	auto finish = [&](Error p_result) {
+		if (nested) {
+			p_context->PopState();
+		} else {
+			p_context->Unprepare();
+		}
+		return p_result;
+	};
+
+	if (p_context->Prepare(p_func) < 0) {
+		return finish(ERR_CANT_CREATE);
 	}
 	if (p_object != nullptr) {
 		p_context->SetObject(p_object);
@@ -211,12 +292,10 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 			} break;
 			default:
 				// 对象/字符串等参数类型留待绑定层（M2）。
-				p_context->Unprepare();
-				return ERR_INVALID_PARAMETER;
+				return finish(ERR_INVALID_PARAMETER);
 		}
 		if (set_result < 0) {
-			p_context->Unprepare();
-			return ERR_INVALID_PARAMETER;
+			return finish(ERR_INVALID_PARAMETER);
 		}
 	}
 
@@ -231,8 +310,7 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 				exception != nullptr ? exception : "execution did not finish",
 				section != nullptr ? section : "<script>",
 				line));
-		p_context->Unprepare();
-		return FAILED;
+		return finish(FAILED);
 	}
 
 	if (r_ret != nullptr) {
@@ -260,6 +338,5 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 		}
 	}
 
-	p_context->Unprepare();
-	return OK;
+	return finish(OK);
 }

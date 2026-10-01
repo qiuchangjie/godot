@@ -49,6 +49,28 @@ static ASBindingKind _object_kind_for_type_name(const String &p_type_name) {
 			: AS_KIND_OBJECT_NONOWNING;
 }
 
+// M3：脚本执行期间指向“当前正在运行的脚本实例”。AS 脚本类不是 Node 子类，脚本内无法
+// 引用承载它的节点；宿主内建 as_self() 靠这个指针取 owner。用 RAII 在每次进入/离开脚本
+// 调用时保存与恢复，嵌套调用（脚本回调里再触发脚本调用）也能正确回退到外层实例。
+static ASScriptInstance *g_current_script_instance = nullptr;
+
+namespace {
+struct ASInstanceScope {
+	ASScriptInstance *previous = nullptr;
+	explicit ASInstanceScope(ASScriptInstance *p_instance) :
+			previous(g_current_script_instance) {
+		g_current_script_instance = p_instance;
+	}
+	~ASInstanceScope() {
+		g_current_script_instance = previous;
+	}
+};
+} // namespace
+
+ASScriptInstance *as_current_script_instance() {
+	return g_current_script_instance;
+}
+
 ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owner) {
 	script = p_script;
 	owner = p_owner;
@@ -404,6 +426,10 @@ Variant ASScriptInstance::callp(const StringName &p_method, const Variant **p_ar
 		r_error.error = Callable::CallError::CALL_ERROR_INVALID_METHOD;
 		return Variant();
 	}
+
+	// 进入脚本执行前登记当前实例，离开时（正常返回或异常）由 RAII 自动恢复。
+	// notification() 内部走 callp()，因此这里是脚本执行的唯一入口。
+	ASInstanceScope instance_scope(this);
 
 	Variant ret;
 	const Error err = ASEngine::call_function(context, func, object, p_args, p_argcount, &ret);

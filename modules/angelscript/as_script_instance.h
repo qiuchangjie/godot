@@ -73,3 +73,7 @@ public:
 	virtual Ref<Script> get_script() const override { return script; }
 	virtual ScriptLanguage *get_language() override;
 };
+
+// M3：脚本执行期间指向“当前正在运行的脚本实例”，供宿主内建函数（as_self）取承载节点；
+// 非执行期为 nullptr。AS 脚本类不是 Node 子类，脚本内没有任何方式引用承载它的节点。
+ASScriptInstance *as_current_script_instance();
