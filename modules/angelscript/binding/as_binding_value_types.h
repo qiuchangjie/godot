@@ -47,6 +47,10 @@ public:
 	// 注册全部内建值类型与 string 工厂。幂等：已注册的类型通过 GetTypeInfoByName 跳过。
 	static Error register_all(asIScriptEngine *p_engine);
 
+	// 注册依赖对象类型的 Variant 转换构造器（`Variant(Object @)`）。
+	// 必须在全部对象骨架注册完成之后调用：值类型阶段解析不到 `Object` 类型名。
+	static Error register_object_conversions(asIScriptEngine *p_engine);
+
 	// asCALL_GENERIC 跳板：内建方法/成员/运算符/索引共用；具体行为由 GetUserData 的绑定记录决定。
 	static void generic_value_call(asIScriptGeneric *p_gen);
 };

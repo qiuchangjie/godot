@@ -142,6 +142,9 @@ Error ASBindingRegistry::register_plan(const ASBindingPlan &p_plan, asIScriptEng
 	for (const ASBindingClass &c : p_plan.get_classes()) {
 		ASBindingObject::register_skeleton(c, p_engine);
 	}
+	// 对象骨架齐备后，才能注册依赖 `Object` 类型名的 Variant 转换构造器。
+	Error conv_err = ASBindingValueTypes::register_object_conversions(p_engine);
+	ERR_FAIL_COND_V_MSG(conv_err != OK, conv_err, "AngelScript: failed to register Variant object constructors");
 	for (const ASBindingClass &c : p_plan.get_classes()) {
 		ASBindingObject::register_class(c, p_engine);
 	}

@@ -39,7 +39,9 @@
 #include "test_angelscript_m3_property.h"
 
 #include "core/object/class_db.h"
+#include "core/os/memory.h"
 #include "core/string/print_string.h"
+#include "scene/main/node.h"
 
 #include <angelscript.h>
 
@@ -170,6 +172,23 @@ void _probe_array_sum(asIScriptGeneric *p_gen) {
 	p_gen->SetReturnDouble(sum);
 }
 
+// 探针 P3（Task 8）：脚本侧 `Variant(对象句柄)` 构造出的 Variant 是否持有对象。
+void _probe_variant_object(asIScriptGeneric *p_gen) {
+	Variant v = as_binding_marshal_arg(p_gen, 0, AS_KIND_VALUE);
+	p_gen->SetReturnDouble(v.get_type() == Variant::OBJECT ? 1.0 : 0.0);
+}
+
+// 宿主持有的借用对象：脚本只拿非拥有句柄，释放时机完全由宿主决定，
+// 避免"脚本创建非 RefCounted 对象却没有释放通道"造成的退出期泄漏。
+Node *g_borrow_node = nullptr;
+
+void _probe_borrow_node(asIScriptGeneric *p_gen) {
+	if (g_borrow_node == nullptr) {
+		g_borrow_node = memnew(Node);
+	}
+	p_gen->SetReturnObject(as_handle_encode(g_borrow_node, AS_KIND_OBJECT_NONOWNING));
+}
+
 } // namespace
 
 void as_m3_probe_array_and_variant() {
@@ -201,7 +220,35 @@ void as_m3_probe_array_and_variant() {
 }
 
 void as_m3_variant_object_arg() {
-	// Task 8 实现：Variant(Object @) 构造器。
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as->ensure_initialized());
+	asIScriptEngine *engine = as->get_engine();
+	REQUIRE(engine != nullptr);
+	REQUIRE(ASBindingValueTypes::register_all(engine) == OK);
+	REQUIRE(ensure_object_binding(engine));
+
+	// `Variant(Object @)` 依赖 Object 类型名：必须在对象骨架注册之后才可解析。
+	REQUIRE(ASBindingValueTypes::register_object_conversions(engine) == OK);
+
+	REQUIRE(engine->RegisterGlobalFunction("double probe_variant_object(const Variant &in v)", asFUNCTION(_probe_variant_object), asCALL_GENERIC) >= 0);
+	REQUIRE(engine->RegisterGlobalFunction("Node@ probe_borrow_node()", asFUNCTION(_probe_borrow_node), asCALL_GENERIC) >= 0);
+
+	// 宿主已注册的全局函数对脚本自动可见，脚本中不得再写前向声明。
+	const String src =
+			"double main() {\n"
+			"	Node @n = probe_borrow_node();\n"
+			"	return probe_variant_object(Variant(n));\n"
+			"}\n";
+
+	double out = 0.0;
+	const bool ran = run_double(src, &out);
+	// 无论成败都由宿主释放（脚本拿的是非拥有句柄，无释放通道）。
+	if (g_borrow_node != nullptr) {
+		memdelete(g_borrow_node);
+		g_borrow_node = nullptr;
+	}
+	REQUIRE_MESSAGE(ran, g_last_error);
+	CHECK_MESSAGE(nearly(out, 1.0), vformat("out=%.6f（期望 1）", out));
 }
 
 void as_m3_property_roundtrip() {

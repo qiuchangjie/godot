@@ -535,6 +535,33 @@ static void register_string_support(asIScriptEngine *p_engine) {
 
 static asIScriptEngine *g_registered_engine = nullptr;
 
+// 注册依赖对象类型的 Variant 转换构造器（`Variant(Object @)`）。
+// 必须在全部对象骨架注册完成之后调用：值类型阶段解析不到 `Object` 类型名，
+// 一旦 Register* 失败引擎会被永久标记为 configFailed 且不可恢复。
+Error ASBindingValueTypes::register_object_conversions(asIScriptEngine *p_engine) {
+	if (!p_engine) {
+		return ERR_INVALID_PARAMETER;
+	}
+	static asIScriptEngine *g_object_conv_engine = nullptr;
+	if (g_object_conv_engine == p_engine) {
+		return OK; // 幂等：同一引擎只注册一次。
+	}
+	if (p_engine->GetTypeInfoByName("Object") == nullptr) {
+		return OK; // 对象骨架尚未注册，交给后续调用点。
+	}
+	// 对象句柄作为**非拥有**句柄传入：Variant 只持引用，不接管生命周期。
+	// 跳板走 VT_CTOR_ARGS 的 Variant 自身分支（`*self = *args[0]`）。
+	ASValueBinding *b = memnew(ASValueBinding);
+	b->kind = VT_CTOR_ARGS;
+	b->type = Variant::NIL;
+	b->arg_count = 1;
+	b->param_kinds.push_back(AS_KIND_OBJECT_NONOWNING);
+	add_behaviour(p_engine, String("Variant").utf8(), asBEHAVE_CONSTRUCT, "void f(Object @)", b);
+
+	g_object_conv_engine = p_engine;
+	return OK;
+}
+
 Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 	if (!p_engine) {
 		return ERR_INVALID_PARAMETER;
