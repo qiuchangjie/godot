@@ -62,6 +62,10 @@ void ASScriptLanguage::frame() {
 }
 
 void ASScriptLanguage::finish() {
+	ASEngine *as_engine = ASEngine::get_singleton();
+	if (as_engine != nullptr) {
+		as_engine->collect_garbage(); // 退出前最后收一次，减少退出期泄漏告警
+	}
 	ASEngine::get_singleton()->shutdown();
 }
 

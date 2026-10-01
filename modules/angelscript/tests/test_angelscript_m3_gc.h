@@ -33,9 +33,14 @@
 #include "tests/test_macros.h"
 
 void as_m3_gc_throttled();
+void as_m3_instance_dtor_requests_gc();
 
 #ifndef ANGELSCRIPT_M3_GC_TESTS_IMPL
 TEST_CASE("[AngelScript][M3] gc throttle") {
 	as_m3_gc_throttled();
+}
+
+TEST_CASE("[AngelScript][M3] instance destructor requests gc") {
+	as_m3_instance_dtor_requests_gc();
 }
 #endif // ANGELSCRIPT_M3_GC_TESTS_IMPL

@@ -106,6 +106,19 @@ class signal_demo {
 - 已知限制：信号（以及任何宿主 `Callable`）回调的**参数只支持标量**——`ASEngine::call_function` 目前只编组 `bool` / `int64` / `double`，带对象、字符串或其它内建值类型参数的信号回调无法派发。需要传递复杂数据时，请让回调只接收标量句柄 / ID，或改用属性通道。
 - 已知限制：带默认值形参的 Godot 方法在 AS 侧没有默认值，必须显式传全部实参，例如 `connect(StringName("ping"), as_callable(as_self(), "on_ping"), 0)`。
 
+## 垃圾回收（M3）
+
+- AS 自身的自动增量回收保持开启。
+- 宿主兜底：`ScriptLanguage::frame()` 按项目设置 `angel_script/gc/interval_seconds`（默认 `5.0` 秒，`0` 关闭）触发一次完整回收；脚本实例析构会在下一帧触发一次。
+- 退出前 `finish()` 会做最后一次完整回收。
+
+### 已知泄漏面（约束）
+
+- AS 对象 → Godot `Node`/`Object`：非拥有句柄不保活，**不会**形成环。
+- AS 对象 ↔ AS 对象：由 AS 垃圾回收负责，可回收。
+- **AS 对象 ↔ `RefCounted`（Godot 侧强引用）**：AS GC 看不见 Godot 的引用计数，可能形成无法回收的环。需要反向引用时请用 `ObjectID` / `WeakRef`，不要在 Godot 侧强引用脚本对象。
+- 脚本创建的非 `RefCounted` 对象（如 `Node`）无法从脚本释放，进程退出时可能出现 `ObjectDB instances were leaked` 告警。
+
 ## 内建 API
 
 | 声明 | 说明 |

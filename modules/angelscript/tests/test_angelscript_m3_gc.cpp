@@ -29,11 +29,15 @@
 /**************************************************************************/
 
 #include "../as_engine.h"
+#include "../as_script.h"
 
 #define ANGELSCRIPT_M3_GC_TESTS_IMPL
 #include "test_angelscript_m3_gc.h"
 
+#include "../binding/as_binding_value_types.h"
+#include "core/object/class_db.h"
 #include "core/string/print_string.h"
+#include "scene/main/node.h"
 
 void as_m3_gc_throttled() {
 	ASEngine *engine = ASEngine::get_singleton();
@@ -53,6 +57,40 @@ void as_m3_gc_throttled() {
 	CHECK(engine->get_gc_count() == base + 1);
 
 	// 请求标志已被消费 ⇒ 不重复回收。
+	engine->maybe_collect_garbage();
+	CHECK(engine->get_gc_count() == base + 1);
+
+	engine->set_gc_interval_seconds(5.0);
+}
+
+void as_m3_instance_dtor_requests_gc() {
+	ASEngine *engine = ASEngine::get_singleton();
+	REQUIRE(engine != nullptr);
+	REQUIRE(engine->ensure_initialized());
+	ASBindingValueTypes::register_all(engine->get_engine());
+
+	Ref<ASScript> script;
+	script.instantiate();
+	const String path = "res://m3_gc_demo.as";
+	script->set_path(path);
+	const String src =
+			"// godot_base: Node\n"
+			"class m3_gc_demo {\n"
+			"\tvoid _ready() {}\n"
+			"}\n";
+	String err;
+	REQUIRE(script->compile_source(src, path, &err));
+
+	// 关闭时间节流并清空 pending，确保只有析构触发的请求能改变计数。
+	engine->set_gc_interval_seconds(0.0);
+	engine->maybe_collect_garbage();
+	const int base = engine->get_gc_count();
+
+	Node *owner = memnew(Node);
+	owner->set_script(script);
+	REQUIRE(owner->get_script_instance() != nullptr);
+	memdelete(owner); // 析构 ASScriptInstance ⇒ 应置 pending
+
 	engine->maybe_collect_garbage();
 	CHECK(engine->get_gc_count() == base + 1);
 

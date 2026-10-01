@@ -134,6 +134,12 @@ ASScriptInstance::~ASScriptInstance() {
 		context->Release();
 		context = nullptr;
 	}
+	// M3：脚本实例销毁意味着可能有一批纯脚本对象失去外部引用，
+	// 请求宿主在下一帧做一次完整回收（避免等到节流间隔到期）。
+	ASEngine *as_engine = ASEngine::get_singleton();
+	if (as_engine != nullptr) {
+		as_engine->request_gc();
+	}
 }
 
 bool ASScriptInstance::_find_property(const StringName &p_name, int *r_index, int *r_type_id) const {
