@@ -33,6 +33,7 @@
 #include "as_engine.h"
 #include "as_script_instance.h"
 #include "as_script_language.h"
+#include "binding/as_binding_decl.h"
 
 #include "core/object/class_db.h"
 
@@ -53,6 +54,7 @@ void ASScript::clear() {
 	class_name = StringName();
 	instance_base_type = StringName();
 	source_code = String();
+	signals.clear();
 	if (!module_name.is_empty() && ASEngine::get_singleton()->is_initialized()) {
 		asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
 		CharString module_cstr = module_name.utf8();
@@ -180,6 +182,7 @@ bool ASScript::compile_source(const String &p_source, const String &p_path, Stri
 	class_name = expected_class;
 	instance_base_type = base_type;
 	valid = true;
+	_collect_signals();
 	return true;
 }
 
@@ -210,6 +213,10 @@ Error ASScript::reload(bool p_keep_state) {
 }
 
 bool ASScript::has_method(const StringName &p_method) const {
+	// `signal_<name>` 是信号声明约定，不作为普通方法暴露（与 has_script_signal 分工）。
+	if (String(p_method).begins_with("signal_")) {
+		return false;
+	}
 	asITypeInfo *type = get_type_info();
 	if (type == nullptr) {
 		return false;
@@ -232,9 +239,96 @@ void ASScript::get_script_method_list(List<MethodInfo> *p_list) const {
 		if (func == nullptr || func->GetName() == nullptr) {
 			continue;
 		}
+		// `signal_<name>` 是信号声明约定，不进普通方法表。
+		if (String(func->GetName()).begins_with("signal_")) {
+			continue;
+		}
 		MethodInfo mi;
 		mi.name = StringName(func->GetName());
 		p_list->push_back(mi);
+	}
+}
+
+void ASScript::_collect_signals() {
+	signals.clear();
+	asITypeInfo *type = get_type_info();
+	if (type == nullptr) {
+		return;
+	}
+	for (asUINT i = 0; i < type->GetMethodCount(); i++) {
+		// 必须用 getVirtual=false 取真实实现：AS 的虚函数桩（CreateVirtualFunction）不复制参数名，
+		// 用默认的 true 会拿到空的 parameterNames（类型却仍是拷贝过来的，故只有名字会丢）。
+		asIScriptFunction *fn = type->GetMethodByIndex(i, false);
+		if (fn == nullptr || fn->GetName() == nullptr) {
+			continue;
+		}
+		const String full_name = String(fn->GetName());
+		if (!full_name.begins_with("signal_")) {
+			continue;
+		}
+		ASSignalInfo sig;
+		sig.name = StringName(full_name.substr(7));
+		bool mapped = true;
+		for (asUINT p = 0; p < fn->GetParamCount(); p++) {
+			int type_id = 0;
+			const char *arg_name = nullptr;
+			fn->GetParam(p, &type_id, nullptr, &arg_name);
+			PropertyInfo pi;
+			switch (type_id) {
+				case asTYPEID_BOOL:
+					pi.type = Variant::BOOL;
+					break;
+				case asTYPEID_INT32:
+				case asTYPEID_INT64:
+					pi.type = Variant::INT;
+					break;
+				case asTYPEID_FLOAT:
+				case asTYPEID_DOUBLE:
+					pi.type = Variant::FLOAT;
+					break;
+				default: {
+					asITypeInfo *ti = ASEngine::get_singleton()->get_engine()->GetTypeInfoById(type_id & ~asTYPEID_OBJHANDLE);
+					if (ti == nullptr) {
+						mapped = false;
+						break;
+					}
+					const Variant::Type vt = ASBindingDecl::as_name_to_variant_type(String(ti->GetName()));
+					if (vt == Variant::NIL) {
+						// 对象类型参数（`Node@` 等）本轮不支持：整个信号不声明，避免 connect/emit 时参数对不上。
+						mapped = false;
+						break;
+					}
+					pi.type = vt;
+					break;
+				}
+			}
+			if (!mapped) {
+				break;
+			}
+			pi.name = String(arg_name != nullptr ? arg_name : "");
+			sig.args.push_back(pi);
+		}
+		if (mapped) {
+			signals.push_back(sig);
+		}
+	}
+}
+
+bool ASScript::has_script_signal(const StringName &p_signal) const {
+	for (const ASSignalInfo &sig : signals) {
+		if (sig.name == p_signal) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void ASScript::get_script_signal_list(List<MethodInfo> *r_signals) const {
+	for (const ASSignalInfo &sig : signals) {
+		MethodInfo mi;
+		mi.name = sig.name;
+		mi.arguments = sig.args;
+		r_signals->push_back(mi);
 	}
 }
 

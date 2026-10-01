@@ -63,6 +63,8 @@ class ASBindingDecl {
 public:
 	// Variant 标量/值类型 -> AS 类型名（OBJECT 不在此处理，因为它需要 class_name）。
 	static String variant_type_to_as(Variant::Type p_type);
+	// AS 类型名 -> Variant 类型（variant_type_to_as 的反查）；无对应类型返回 Variant::NIL。
+	static Variant::Type as_name_to_variant_type(const String &p_as_name);
 	// PropertyInfo -> AS 类型（含 OBJECT 的 class_name；枚举型属性退化为 int64）。
 	static ASBindingType resolve(const PropertyInfo &p_info);
 	// MethodInfo -> AS 声明串（不含所属类名）。失败时返回 false 并写 r_reason。

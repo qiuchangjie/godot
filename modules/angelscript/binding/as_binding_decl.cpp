@@ -80,6 +80,20 @@ String ASBindingDecl::variant_type_to_as(Variant::Type p_type) {
 	}
 }
 
+Variant::Type ASBindingDecl::as_name_to_variant_type(const String &p_as_name) {
+	if (p_as_name.is_empty()) {
+		return Variant::NIL;
+	}
+	// 以 variant_type_to_as 为唯一事实来源反查，避免维护两份会漂移的映射表。
+	for (int i = 0; i < Variant::VARIANT_MAX; i++) {
+		const Variant::Type t = (Variant::Type)i;
+		if (variant_type_to_as(t) == p_as_name) {
+			return t;
+		}
+	}
+	return Variant::NIL; // 对象类型（`Node@` 等）与未知类型：无 Variant::Type 对应。
+}
+
 ASBindingType ASBindingDecl::resolve(const PropertyInfo &p_info) {
 	ASBindingType out;
 	if (p_info.type == Variant::OBJECT) {

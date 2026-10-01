@@ -47,6 +47,15 @@ class ASScript : public Script {
 	String compile_error;
 	bool valid = false;
 
+	// 由 `signal_<name>` 约定方法收集来的信号声明（见 _collect_signals）。
+	// 参数只支持可映射到 Variant 的类型；含对象参数或不支持类型的信号整体忽略。
+	struct ASSignalInfo {
+		StringName name;
+		Vector<PropertyInfo> args;
+	};
+	Vector<ASSignalInfo> signals;
+	void _collect_signals();
+
 	static asITypeInfo *_find_script_class(asIScriptModule *p_module, const String &p_class_name);
 
 public:
@@ -81,8 +90,8 @@ public:
 	virtual bool is_valid() const override { return valid; }
 	virtual bool is_abstract() const override { return false; }
 	virtual ScriptLanguage *get_language() const override;
-	virtual bool has_script_signal(const StringName &p_signal) const override { return false; }
-	virtual void get_script_signal_list(List<MethodInfo> *r_signals) const override {}
+	virtual bool has_script_signal(const StringName &p_signal) const override;
+	virtual void get_script_signal_list(List<MethodInfo> *r_signals) const override;
 	virtual bool get_property_default_value(const StringName &p_property, Variant &r_value) const override { return false; }
 	virtual void get_script_method_list(List<MethodInfo> *p_list) const override;
 	virtual void get_script_property_list(List<PropertyInfo> *p_list) const override;
