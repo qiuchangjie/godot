@@ -8,6 +8,11 @@
 #include "core/templates/hash_set.h"
 #include "core/variant/callable.h"
 
+// 非拥有句柄的槽里放的是 64 位 ObjectID（validator + slot + ref 位），必须完整放进 sizeof(void*) 的槽。
+// 32 位平台的 uintptr_t 会截断高位，解码时可能命中另一个存活对象（对象错认），而不是安全降级为 null。
+// 本里程碑只承诺 64 位平台（五平台均为 64 位构建）：让 32 位构建在编译期大声失败（spec §3.3）。
+static_assert(sizeof(void *) >= 8, "AngelScript 非拥有对象句柄要求 64 位平台：ObjectID 为 64 位，32 位指针槽会截断。");
+
 namespace {
 
 // 跳板运行时要靠“成员是谁”来转发调用，这些记录以泄漏式堆对象挂在

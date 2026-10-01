@@ -49,11 +49,10 @@ bool g_bound = false;
 int g_module_seq = 0;
 
 // 只绑定探针需要的那条继承链（Object/RefCounted/Resource/Node），避免全量注册。
-void ensure_object_binding(asIScriptEngine *p_engine) {
+bool ensure_object_binding(asIScriptEngine *p_engine) {
 	if (g_bound) {
-		return;
+		return true;
 	}
-	g_bound = true;
 
 	ASBindingScope scope;
 	scope.whitelist.push_back("Object");
@@ -63,13 +62,18 @@ void ensure_object_binding(asIScriptEngine *p_engine) {
 
 	ASBindingPlan plan;
 	plan.build(scope);
+	bool ok = true;
 	for (const ASBindingClass &c : plan.get_classes()) {
-		ASBindingObject::register_skeleton(c, p_engine);
+		ok = ASBindingObject::register_skeleton(c, p_engine) == OK && ok;
 	}
 	for (const ASBindingClass &c : plan.get_classes()) {
-		ASBindingObject::register_class(c, p_engine);
+		ok = ASBindingObject::register_class(c, p_engine) == OK && ok;
 	}
-	ASBindingObject::register_enums(plan.get_enums(), p_engine);
+	ok = ASBindingObject::register_enums(plan.get_enums(), p_engine) == OK && ok;
+
+	// 只有全部成功才置位：若在注册前就置位，注册失败会被静默吞掉，探针缺失却可能"空跑通过"。
+	g_bound = ok;
+	return ok;
 }
 
 // 探针用全局句柄值（存活 / 已失效两种）；它们是槽内容，不是可解引用的指针。
@@ -145,22 +149,25 @@ void probe_owning_id(asIScriptGeneric *p_gen) {
 
 // 探针函数的幂等注册。以 probe_get_live 是否存在作为守卫：它们必须一次性全部注册，
 // 否则同一引擎上先后运行的用例会看到不一致的探针集合。
-void ensure_probe_functions(asIScriptEngine *p_engine) {
+// 返回注册是否全部成功：注册失败必须让用例失败，而不是让探针缺失后"空跑"。
+bool ensure_probe_functions(asIScriptEngine *p_engine) {
 	if (p_engine->GetGlobalFunctionByDecl("Node@ probe_get_live()") != nullptr) {
-		return;
+		return true;
 	}
-	p_engine->RegisterGlobalFunction("Node@ probe_get_live()", asFUNCTION(probe_get_live), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("Node@ probe_get_stale()", asFUNCTION(probe_get_stale), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("int probe_decode(Node@)", asFUNCTION(probe_decode), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("int probe_decode_raw(Node@)", asFUNCTION(probe_decode_raw), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("int probe_capture_slot(Node@)", asFUNCTION(probe_capture_slot), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("Node@ probe_make_node()", asFUNCTION(probe_make_node), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("void probe_free_node()", asFUNCTION(probe_free_node), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("int64 probe_handle_raw(Object@)", asFUNCTION(probe_handle_raw), asCALL_GENERIC);
+	bool ok = true;
+	ok = p_engine->RegisterGlobalFunction("Node@ probe_get_live()", asFUNCTION(probe_get_live), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("Node@ probe_get_stale()", asFUNCTION(probe_get_stale), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("int probe_decode(Node@)", asFUNCTION(probe_decode), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("int probe_decode_raw(Node@)", asFUNCTION(probe_decode_raw), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("int probe_capture_slot(Node@)", asFUNCTION(probe_capture_slot), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("Node@ probe_make_node()", asFUNCTION(probe_make_node), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("void probe_free_node()", asFUNCTION(probe_free_node), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("int64 probe_handle_raw(Object@)", asFUNCTION(probe_handle_raw), asCALL_GENERIC) >= 0 && ok;
 	// 形参声明走生产渲染器：这条探针因此锁住 as_binding_render_param 对对象句柄的处理。
 	const String owning_decl = "int64 probe_owning_id(" + as_binding_render_param("Resource@") + ")";
-	p_engine->RegisterGlobalFunction(owning_decl.utf8().get_data(), asFUNCTION(probe_owning_id), asCALL_GENERIC);
-	p_engine->RegisterGlobalFunction("int probe_capture_object_id(Object@)", asFUNCTION(probe_capture_object_id), asCALL_GENERIC);
+	ok = p_engine->RegisterGlobalFunction(owning_decl.utf8().get_data(), asFUNCTION(probe_owning_id), asCALL_GENERIC) >= 0 && ok;
+	ok = p_engine->RegisterGlobalFunction("int probe_capture_object_id(Object@)", asFUNCTION(probe_capture_object_id), asCALL_GENERIC) >= 0 && ok;
+	return ok;
 }
 
 // 公共前置：初始化引擎、注册绑定与探针、编译模块、取出入口函数并准备好上下文。
@@ -172,8 +179,14 @@ bool prepare_probe_context(asIScriptEngine *p_engine, const String &p_source, co
 	}
 	asIScriptEngine *engine = p_engine != nullptr ? p_engine : as->get_engine();
 	ASBindingValueTypes::register_all(engine);
-	ensure_object_binding(engine);
-	ensure_probe_functions(engine);
+	if (!ensure_object_binding(engine)) {
+		*r_err = "object binding registration failed";
+		return false;
+	}
+	if (!ensure_probe_functions(engine)) {
+		*r_err = "probe function registration failed";
+		return false;
+	}
 
 	const String module_name = "as_m3_probe_" + itos(g_module_seq++);
 	String compile_error;

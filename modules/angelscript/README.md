@@ -44,6 +44,7 @@
 - `Object@` 是弱引用：把 `RefCounted` 实例赋给 `Object@` **不会**保活它；需要保活请声明具体类型（如 `Resource@`）。
 - 非拥有句柄每次解引用都要经 `ObjectDB` 查表校验，因此脚本持有句柄不会阻止对象被释放，也不会产生跨边界的引用环。
 - 对象被释放后再经非拥有句柄访问，得到 `AngelScript: <成员名>: object is null or has been freed` 异常，而不是野指针。
+- **`is null` 不做存活校验**：非拥有槽里存的是 `ObjectID`，`x is null` / `x !is null` 只比较槽原值、不查 `ObjectDB`；对象释放后槽值不变（非 0），所以弱句柄**不会**变 null。不能用 `if (weak is null)` 判断存活，失效只能靠**访问**（调用方法/读写属性）暴露为上面的异常。
 
 ### 已知限制
 
@@ -53,6 +54,7 @@
 - vararg 的 `print` 家族因此不可用；热更脚本的字符串输出暂用内建 `as_log_string`（见内建 API 表）。
 - 不支持向下转换（无 `opCast`）：只能把派生类句柄赋给祖先类句柄，不能反向。
 - 非 `RefCounted` 的 `Object`（如 `Node`）不绑定 `free()`（它是 GDVIRTUAL、没有 MethodBind），脚本无法显式释放，退出时会出现 `ObjectDB instances were leaked` 警告；`RefCounted` 由引用计数正常回收。
+- 仅支持 64 位平台：非拥有句柄槽里存 64 位 `ObjectID`，必须完整放进指针宽度的槽；32 位平台会截断高位、可能错认对象。绑定层用 `static_assert(sizeof(void *) >= 8)` 在编译期拦截 32 位构建。
 - 绑定注册耗时随绑定面线性增长：默认（空白名单）全量放行时，editor 构建下约 1047 个类、12.8 万条成员，`ensure_initialized()` 首次调用需约 2 分钟（`ASBindingPlan::build()` 只占 0.2 s，耗时在 AS `RegisterObjectMethod` 的固有开销，约 1 ms/条；本版 AS 的注册类型之间不支持继承，只能逐类复制全量成员 + `opImplCast`，没有捷径）。用 `angel_script/class_whitelist` 收窄到脚本实际需要的类型可降到秒级（白名单 5 类时注册 878 条），按需/惰性注册属后续里程碑。
 - `.d.as` 声明与运行期注册在极端重名场景下可能不一致：运行期对「属性访问器/常量/枚举名已被祖先注册占用」的项做幂等跳过（这些成员通常仍可经祖先句柄访问），但这些跳过项不会回填 `angelscript_unbound.txt`，dump 仍会声明它们。若严格照 dump 写脚本后在运行期编译失败，请以运行期为准。
 
@@ -118,9 +120,10 @@ bin\godot.windows.editor.x86_64.console.exe --headless --dump-angelscript-api <�
 bin\godot.windows.editor.x86_64.console.exe --headless --path modules/angelscript/tests/e2e_project --quit-after 2
 ```
 
-预期退出码为 0，stdout 依次出现 `Node`、`1`、`3`、`42`：
+预期退出码为 0，stdout 依次出现 `Node`、`1`、`3`、`M3:handle-ok`、`42`：
 
 - `42`：`main.as` 的 `_ready()` 调用 `as_log_int`（阶段一通道）。
+- `M3:handle-ok`：`handle_demo.as` 演示 M3 弱句柄（`Object@`）赋值后仍指向存活对象（子节点 `_ready()` 先于父节点，故它出现在 `42` 之前）。
 - `Node` / `1` / `3`：`binding_demo.as` 用绑定层 API 演示 `Node.get_class()` 的 String 编组、`add_child` 的对象参数、`get_child_count` 的 int64 返回值与 `process_mode` 属性读写。
 
 没有 `Failed to load AngelScript` / `Failed loading resource` 之类的错误。这一次运行覆盖：`.as` 加载器注册、`.tscn` 按路径挂载脚本、`get_instance_base_type()` 生效、`_ready` 经 `GDVIRTUAL` → `callp()` 派发、内建 API 与绑定层均可调用。
