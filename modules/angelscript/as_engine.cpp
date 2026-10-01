@@ -35,6 +35,7 @@
 #include "binding/as_binding_object.h"
 #include "binding/as_binding_registry.h"
 #include "core/object/object.h"
+#include "core/os/os.h"
 #include "core/string/print_string.h"
 
 ASEngine *ASEngine::get_singleton() {
@@ -228,6 +229,51 @@ void ASEngine::shutdown() {
 	engine->ShutDownAndRelease();
 	engine = nullptr;
 	last_error = String();
+}
+
+void ASEngine::request_gc() {
+	gc_pending = true;
+}
+
+void ASEngine::collect_garbage() {
+	if (!is_initialized() || engine == nullptr) {
+		return;
+	}
+	engine->GarbageCollect(asGC_FULL_CYCLE);
+	last_gc_usec = OS::get_singleton()->get_ticks_usec();
+	gc_count++;
+	gc_pending = false;
+	print_verbose("[AngelScript] garbage collect");
+}
+
+void ASEngine::maybe_collect_garbage() {
+	if (!is_initialized() || engine == nullptr) {
+		return;
+	}
+	if (gc_pending) {
+		collect_garbage();
+		return;
+	}
+	if (gc_interval_seconds <= 0.0) {
+		return;
+	}
+	const uint64_t now = OS::get_singleton()->get_ticks_usec();
+	const uint64_t interval_usec = (uint64_t)(gc_interval_seconds * 1000000.0);
+	if (now - last_gc_usec >= interval_usec) {
+		collect_garbage();
+	}
+}
+
+void ASEngine::set_gc_interval_seconds(double p_seconds) {
+	gc_interval_seconds = p_seconds;
+}
+
+double ASEngine::get_gc_interval_seconds() const {
+	return gc_interval_seconds;
+}
+
+int ASEngine::get_gc_count() const {
+	return gc_count;
 }
 
 Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret) {

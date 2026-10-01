@@ -43,6 +43,7 @@ public:
 
 	virtual String get_name() const override { return "AngelScript"; }
 	virtual void init() override;
+	virtual void frame() override;
 	virtual String get_type() const override { return "AngelScript"; }
 	virtual String get_extension() const override { return "as"; }
 	virtual void finish() override;

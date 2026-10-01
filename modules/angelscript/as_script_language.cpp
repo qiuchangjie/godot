@@ -32,6 +32,8 @@
 
 #include "as_engine.h"
 
+#include "core/config/project_settings.h"
+
 ASScriptLanguage *ASScriptLanguage::singleton = nullptr;
 
 ASScriptLanguage::ASScriptLanguage() {
@@ -46,6 +48,17 @@ void ASScriptLanguage::init() {
 	// ASEngine 自身也是懒初始化的，这里只是让引擎在语言被正式启用时提前就绪
 	// （--test / headless 路径不会走这里，靠 ASEngine::get_singleton() 兜底）。
 	ASEngine::get_singleton()->ensure_initialized();
+
+	// M3：宿主节流回收的间隔（秒）。0 表示关闭宿主侧兜底，只保留 AS 自身的回收。
+	GLOBAL_DEF_BASIC("angel_script/gc/interval_seconds", 5.0);
+	ASEngine::get_singleton()->set_gc_interval_seconds(GLOBAL_GET("angel_script/gc/interval_seconds"));
+}
+
+void ASScriptLanguage::frame() {
+	ASEngine *as_engine = ASEngine::get_singleton();
+	if (as_engine != nullptr) {
+		as_engine->maybe_collect_garbage();
+	}
 }
 
 void ASScriptLanguage::finish() {

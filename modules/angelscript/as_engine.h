@@ -46,6 +46,13 @@ class ASEngine {
 	// 运行期绑定计划：与 --dump-angelscript-api 消费同一份内省结果（spec §3.8.2 方案 A）。
 	ASBindingPlan binding_plan;
 
+	// M3：宿主侧兜底垃圾回收的节流状态。AS 自身的 autoGarbageCollect 仍开启
+	// （增量回收），这里只在间隔到期或显式请求时做一次完整周期。
+	double gc_interval_seconds = 5.0; // 0.0 表示关闭宿主节流（只保留 AS 自身回收）。
+	bool gc_pending = false;
+	uint64_t last_gc_usec = 0;
+	int gc_count = 0;
+
 	static void _message_callback(const asSMessageInfo *p_msg, void *p_param);
 
 	// 注册阶段一的最小内建 API（当前只有 as_log_int），由 ensure_initialized() 调用一次。
@@ -75,4 +82,14 @@ public:
 	static Error call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret);
 
 	void shutdown();
+
+	// M3：宿主侧兜底垃圾回收。request_gc() 打一个待回收标记（实例析构时调用）；
+	// maybe_collect_garbage() 由主循环每帧调用，在到期或有待处理请求时回收一次；
+	// collect_garbage() 立即执行一次完整周期，供退出收尾使用。
+	void request_gc();
+	void maybe_collect_garbage();
+	void collect_garbage();
+	void set_gc_interval_seconds(double p_seconds);
+	double get_gc_interval_seconds() const;
+	int get_gc_count() const;
 };
