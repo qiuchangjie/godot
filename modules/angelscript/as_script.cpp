@@ -345,26 +345,53 @@ void ASScript::get_script_property_list(List<PropertyInfo> *p_list) const {
 			continue;
 		}
 		Variant::Type vt = Variant::NIL;
-		switch (type_id & ~asTYPEID_OBJHANDLE) {
-			case asTYPEID_BOOL:
-				vt = Variant::BOOL;
-				break;
-			case asTYPEID_INT32:
-				vt = Variant::INT;
-				break;
-			case asTYPEID_INT64:
-				vt = Variant::INT;
-				break;
-			case asTYPEID_FLOAT:
-				vt = Variant::FLOAT;
-				break;
-			case asTYPEID_DOUBLE:
-				vt = Variant::FLOAT;
-				break;
-			default:
-				continue; // 本阶段只支持内建标量属性；对象/字符串属性留待绑定层（M2）。
+		StringName prop_class_name;
+		if (type_id & asTYPEID_OBJHANDLE) {
+			// 对象句柄属性：报 OBJECT 并带上静态类型名，供编辑器/调用方校验。
+			asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
+			asITypeInfo *ti = engine != nullptr ? engine->GetTypeInfoById(type_id) : nullptr;
+			if (ti == nullptr) {
+				continue;
+			}
+			vt = Variant::OBJECT;
+			prop_class_name = StringName(ti->GetName());
+		} else if (type_id & asTYPEID_MASK_OBJECT) {
+			// 内建值类型（AS 侧槽就是一颗 Variant），经绑定层映射回 Variant::Type。
+			asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
+			asITypeInfo *ti = engine != nullptr ? engine->GetTypeInfoById(type_id) : nullptr;
+			if (ti == nullptr) {
+				continue;
+			}
+			const String tn = String(ti->GetName());
+			if (tn == "string") {
+				continue; // 小写内建 string 不做往返（与 ASScriptInstance::set/get 一致）。
+			}
+			vt = ASBindingDecl::as_name_to_variant_type(tn);
+			if (vt == Variant::NIL) {
+				continue;
+			}
+		} else {
+			switch (type_id) {
+				case asTYPEID_BOOL:
+					vt = Variant::BOOL;
+					break;
+				case asTYPEID_INT32:
+				case asTYPEID_INT64:
+					vt = Variant::INT;
+					break;
+				case asTYPEID_FLOAT:
+				case asTYPEID_DOUBLE:
+					vt = Variant::FLOAT;
+					break;
+				default:
+					continue; // 不支持的类型（既非标量也非已映射的值类型/句柄）不报成有效属性。
+			}
 		}
-		p_list->push_back(PropertyInfo(vt, StringName(prop_name)));
+		if (vt == Variant::OBJECT) {
+			p_list->push_back(PropertyInfo(Variant::OBJECT, String(prop_name), PROPERTY_HINT_NONE, "", PROPERTY_USAGE_DEFAULT, prop_class_name));
+		} else {
+			p_list->push_back(PropertyInfo(vt, StringName(prop_name)));
+		}
 	}
 }
 

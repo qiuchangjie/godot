@@ -71,6 +71,13 @@ ASScriptInstance *as_current_script_instance() {
 	return g_current_script_instance;
 }
 
+// M3：`signal_<name>` 方法只是信号声明，不是可调用方法。ASScript::has_method /
+// get_script_method_list 已过滤，而 Object::has_method / Object::call 会先问脚本实例，
+// 所以实例层也必须过滤，否则会出现"方法列表里没有、却能被 has_method/call 命中"的幻影方法。
+static bool _is_signal_declaration(const StringName &p_method) {
+	return String(p_method).begins_with("signal_");
+}
+
 ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owner) {
 	script = p_script;
 	owner = p_owner;
@@ -391,6 +398,10 @@ void ASScriptInstance::get_method_list(List<MethodInfo> *p_list) const {
 }
 
 bool ASScriptInstance::has_method(const StringName &p_method) const {
+	if (_is_signal_declaration(p_method)) {
+		// 信号声明不是方法（与 ASScript::has_method 一致）。
+		return false;
+	}
 	asITypeInfo *type = script->get_type_info();
 	if (type == nullptr) {
 		return false;
@@ -409,6 +420,12 @@ bool ASScriptInstance::has_method(const StringName &p_method) const {
 
 Variant ASScriptInstance::callp(const StringName &p_method, const Variant **p_args, int p_argcount, Callable::CallError &r_error) {
 	r_error.error = Callable::CallError::CALL_OK;
+
+	if (_is_signal_declaration(p_method)) {
+		// 信号声明不是方法，不可经 call/callp 调用（与 has_method 的过滤一致）。
+		r_error.error = Callable::CallError::CALL_ERROR_INVALID_METHOD;
+		return Variant();
+	}
 
 	asITypeInfo *type = script->get_type_info();
 	if (type == nullptr) {

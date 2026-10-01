@@ -313,6 +313,29 @@ void as_m3_property_roundtrip() {
 	CHECK(inst->get_property_type("target", &valid) == Variant::OBJECT);
 	CHECK(valid);
 
+	// I-2：属性列表必须暴露本 PR 新支持的值类型与对象属性（spec T-5 / §4.4）。
+	List<PropertyInfo> props;
+	inst->get_property_list(&props);
+	bool saw_offset = false;
+	bool saw_label = false;
+	bool saw_target = false;
+	for (const PropertyInfo &pi : props) {
+		if (pi.name == "offset") {
+			saw_offset = true;
+			CHECK(pi.type == Variant::VECTOR2);
+		} else if (pi.name == "label") {
+			saw_label = true;
+			CHECK(pi.type == Variant::STRING);
+		} else if (pi.name == "target") {
+			saw_target = true;
+			CHECK(pi.type == Variant::OBJECT);
+			CHECK(pi.class_name == StringName("Node"));
+		}
+	}
+	CHECK(saw_offset);
+	CHECK(saw_label);
+	CHECK(saw_target);
+
 	memdelete(target);
 	memdelete(owner); // 触发 ASScriptInstance 析构 → Release AS 对象。
 }

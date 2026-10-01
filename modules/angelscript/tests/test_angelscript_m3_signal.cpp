@@ -213,5 +213,13 @@ void as_m3_signal_emit_delivered() {
 	// 脚本侧回调必须真的执行到（嵌套调用路径），而不是只有宿主侧回调收到。
 	CHECK(g_m3_signal_script_seen == 7);
 
+	// I-1：信号声明不是可调用方法，实例层也必须隔离（与 ASScript::has_method 一致）。
+	CHECK_FALSE(inst->has_method("signal_ping"));
+	Variant sig_arg = 1;
+	const Variant *sig_args[1] = { &sig_arg };
+	Callable::CallError sig_ce;
+	inst->callp("signal_ping", sig_args, 1, sig_ce);
+	CHECK(sig_ce.error == Callable::CallError::CALL_ERROR_INVALID_METHOD);
+
 	memdelete(owner);
 }
