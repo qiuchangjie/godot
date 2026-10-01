@@ -252,5 +252,67 @@ void as_m3_variant_object_arg() {
 }
 
 void as_m3_property_roundtrip() {
-	// Task 11 实现：属性/信号往返。
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as->ensure_initialized());
+	asIScriptEngine *engine = as->get_engine();
+	REQUIRE(engine != nullptr);
+	REQUIRE(ASBindingValueTypes::register_all(engine) == OK);
+	REQUIRE(ensure_object_binding(engine));
+
+	Ref<ASScript> script;
+	script.instantiate();
+	const String path = "res://m3_prop_roundtrip.as";
+	script->set_path(path);
+
+	const String src =
+			"// godot_base: Node\n"
+			"class m3_prop_roundtrip {\n"
+			"	Vector2 offset;\n"
+			"	String label;\n"
+			"	Node @target;\n"
+			"}\n";
+	String err;
+	REQUIRE_MESSAGE(script->compile_source(src, path, &err), err);
+	REQUIRE(script->is_valid());
+
+	Node *owner = memnew(Node);
+	ScriptInstance *inst = script->instance_create(owner);
+	REQUIRE(inst != nullptr);
+	if (inst == nullptr) {
+		memdelete(owner);
+		return;
+	}
+	// 交给 owner 托管：owner 析构时会 memdelete 实例 → ASScriptInstance 析构 → Release AS 对象。
+	owner->set_script_instance(inst);
+
+	// 内建值类型属性（AS 侧存储 = 一颗 Variant）。
+	const Vector2 v(3, 4);
+	CHECK(inst->set("offset", v));
+	Variant got;
+	REQUIRE(inst->get("offset", got));
+	CHECK(got.get_type() == Variant::VECTOR2);
+	CHECK(Vector2(got) == v);
+
+	// 同样是 Variant 存储、但脚本写的是 String（大写）。
+	CHECK(inst->set("label", String("hi")));
+	REQUIRE(inst->get("label", got));
+	CHECK(got.get_type() == Variant::STRING);
+	CHECK(String(got) == "hi");
+
+	// 对象句柄属性（非拥有：Node 不是 RefCounted）。
+	Node *target = memnew(Node);
+	CHECK(inst->set("target", target));
+	REQUIRE(inst->get("target", got));
+	CHECK(got.get_type() == Variant::OBJECT);
+	CHECK(got.operator Object *() == target);
+
+	// 类型信息。
+	bool valid = false;
+	CHECK(inst->get_property_type("offset", &valid) == Variant::VECTOR2);
+	CHECK(valid);
+	CHECK(inst->get_property_type("target", &valid) == Variant::OBJECT);
+	CHECK(valid);
+
+	memdelete(target);
+	memdelete(owner); // 触发 ASScriptInstance 析构 → Release AS 对象。
 }

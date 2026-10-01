@@ -46,7 +46,8 @@ class ASScriptInstance : public ScriptInstance {
 	asIScriptObject *object = nullptr;
 	asIScriptContext *context = nullptr;
 
-	int _find_property(const StringName &p_name, int *r_type_id = nullptr) const;
+	// 定位脚本属性：成功时回传属性下标与该属性的 AS 类型 id（含 OBJHANDLE 位）。
+	bool _find_property(const StringName &p_name, int *r_index, int *r_type_id) const;
 	static int _expected_param_count(const StringName &p_method);
 
 public:

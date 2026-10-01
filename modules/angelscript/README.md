@@ -57,6 +57,7 @@
 - 仅支持 64 位平台：非拥有句柄槽里存 64 位 `ObjectID`，必须完整放进指针宽度的槽；32 位平台会截断高位、可能错认对象。绑定层用 `static_assert(sizeof(void *) >= 8)` 在编译期拦截 32 位构建。
 - 绑定注册耗时随绑定面线性增长：默认（空白名单）全量放行时，editor 构建下约 1047 个类、12.8 万条成员，`ensure_initialized()` 首次调用需约 2 分钟（`ASBindingPlan::build()` 只占 0.2 s，耗时在 AS `RegisterObjectMethod` 的固有开销，约 1 ms/条；本版 AS 的注册类型之间不支持继承，只能逐类复制全量成员 + `opImplCast`，没有捷径）。用 `angel_script/class_whitelist` 收窄到脚本实际需要的类型可降到秒级（白名单 5 类时注册 878 条），按需/惰性注册属后续里程碑。
 - `.d.as` 声明与运行期注册在极端重名场景下可能不一致：运行期对「属性访问器/常量/枚举名已被祖先注册占用」的项做幂等跳过（这些成员通常仍可经祖先句柄访问），但这些跳过项不会回填 `angelscript_unbound.txt`，dump 仍会声明它们。若严格照 dump 写脚本后在运行期编译失败，请以运行期为准。
+- 脚本属性的读写（`ASScriptInstance::set()` / `get()`）支持标量、全部内建值类型（含 `String` / `Vector2` / `Array` …，AS 侧存储就是一颗 `Variant`）与对象句柄（拥有 / 非拥有按静态类型编码）；但**小写内建 `string` 类型的属性不做读写往返**（`set` / `get` 返回 `false`），需要字符串属性请声明为 `String`（大写，以 Variant 存储）。
 
 示例 `res://main.as`：
 

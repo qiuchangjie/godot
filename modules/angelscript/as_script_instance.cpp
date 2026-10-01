@@ -33,8 +33,21 @@
 #include "as_engine.h"
 #include "as_script.h"
 #include "as_script_language.h"
+#include "binding/as_binding_decl.h"
+#include "binding/as_binding_object.h"
 
+#include "core/object/class_db.h"
 #include "core/object/object.h"
+#include "core/object/ref_counted.h"
+#include "core/variant/variant.h"
+
+// 对象句柄属性的拥有/非拥有判据与绑定层、跳板必须完全一致：静态类型派生自
+// RefCounted 的句柄由 AS 引用计数保活，其余（含 Object 自身）只是借用。
+static ASBindingKind _object_kind_for_type_name(const String &p_type_name) {
+	return ClassDB::is_parent_class(p_type_name, "RefCounted")
+			? AS_KIND_OBJECT_OWNING
+			: AS_KIND_OBJECT_NONOWNING;
+}
 
 ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owner) {
 	script = p_script;
@@ -94,10 +107,10 @@ ASScriptInstance::~ASScriptInstance() {
 	}
 }
 
-int ASScriptInstance::_find_property(const StringName &p_name, int *r_type_id) const {
+bool ASScriptInstance::_find_property(const StringName &p_name, int *r_index, int *r_type_id) const {
 	asITypeInfo *type = script->get_type_info();
 	if (type == nullptr) {
-		return -1;
+		return false;
 	}
 	for (asUINT i = 0; i < type->GetPropertyCount(); i++) {
 		// asITypeInfo 用 GetProperty(index, &name, &type_id) 枚举属性；
@@ -108,13 +121,16 @@ int ASScriptInstance::_find_property(const StringName &p_name, int *r_type_id) c
 			continue;
 		}
 		if (String(p_name) == String(prop_name)) {
+			if (r_index != nullptr) {
+				*r_index = (int)i;
+			}
 			if (r_type_id != nullptr) {
 				*r_type_id = type_id;
 			}
-			return (int)i;
+			return true;
 		}
 	}
-	return -1;
+	return false;
 }
 
 int ASScriptInstance::_expected_param_count(const StringName &p_method) {
@@ -130,15 +146,71 @@ int ASScriptInstance::_expected_param_count(const StringName &p_method) {
 }
 
 bool ASScriptInstance::set(const StringName &p_name, const Variant &p_value) {
+	if (object == nullptr) {
+		return false;
+	}
+	int index = -1;
 	int type_id = 0;
-	const int index = _find_property(p_name, &type_id);
-	if (index < 0 || object == nullptr) {
+	if (!_find_property(p_name, &index, &type_id)) {
 		return false;
 	}
 	void *addr = object->GetAddressOfProperty((asUINT)index);
 	if (addr == nullptr) {
 		return false;
 	}
+	asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
+	if (engine == nullptr) {
+		return false;
+	}
+
+	if (type_id & asTYPEID_OBJHANDLE) {
+		// 对象句柄属性：槽是 sizeof(void*) 的句柄，编码方式由静态类型决定。
+		// 不能走 engine->AssignScriptObject()：本模块的对象类型只注册了 addref/release
+		// （asOBJ_REF，无 opAssign/POD），AssignScriptObject 对引用类型会返回
+		// asNOT_SUPPORTED 并不改槽（且无活动上下文时连异常都不抛，会静默失败）。
+		// 这里按 AS 赋句柄的语义手工维护计数：先更新槽，再 release 旧对象、addref 新对象。
+		asITypeInfo *ti = engine->GetTypeInfoById(type_id);
+		if (ti == nullptr) {
+			return false;
+		}
+		const ASBindingKind kind = _object_kind_for_type_name(String(ti->GetName()));
+		Object *new_obj = p_value.operator Object *();
+		if (new_obj != nullptr && kind == AS_KIND_OBJECT_OWNING && Object::cast_to<RefCounted>(new_obj) == nullptr) {
+			// 句柄静态类型派生自 RefCounted，但实参不是引用计数对象（如把 Node 塞进 Resource@）。
+			// 继续下去会在非 RefCounted 上调 init_ref()，是未定义行为，直接拒绝。
+			return false;
+		}
+		void **slot = (void **)addr;
+		Object *old_obj = as_handle_decode(*slot, kind);
+		if (old_obj == new_obj) {
+			return true; // 同一对象：槽内容等价，无需调整计数。
+		}
+		*slot = as_handle_encode(new_obj, kind);
+		if (old_obj != nullptr) {
+			engine->ReleaseScriptObject(old_obj, ti);
+		}
+		if (new_obj != nullptr) {
+			engine->AddRefScriptObject(new_obj, ti);
+		}
+		return true;
+	}
+
+	if (type_id & asTYPEID_MASK_OBJECT) {
+		asITypeInfo *ti = engine->GetTypeInfoById(type_id);
+		if (ti == nullptr) {
+			return false;
+		}
+		// 绑定层把全部内建值类型（含 String/Vector2/Array…）按 sizeof(Variant) 注册为
+		// asOBJ_VALUE，槽里就是一颗已构造好的 Variant，直接赋值即可（operator= 自会处理
+		// 旧值的析构与新值的拷贝）。小写内建 `string` 例外：它是 sizeof(void*) 的 intern
+		// 句柄，不是 Variant 存储，本轮不做往返。
+		if (String(ti->GetName()) == "string") {
+			return false;
+		}
+		*(Variant *)addr = p_value;
+		return true;
+	}
+
 	switch (type_id & ~asTYPEID_OBJHANDLE) {
 		case asTYPEID_BOOL:
 			*(bool *)addr = p_value.operator bool();
@@ -156,21 +228,53 @@ bool ASScriptInstance::set(const StringName &p_name, const Variant &p_value) {
 			*(double *)addr = p_value.operator double();
 			return true;
 		default:
-			// 对象/字符串等引用型属性留待绑定层（M2）。
+			// 其它未绑定的引用型属性（如函数指针）不支持。
 			return false;
 	}
 }
 
 bool ASScriptInstance::get(const StringName &p_name, Variant &r_ret) const {
-	int type_id = 0;
-	const int index = _find_property(p_name, &type_id);
-	if (index < 0 || object == nullptr) {
+	if (object == nullptr) {
 		return false;
 	}
-	const void *addr = object->GetAddressOfProperty((asUINT)index);
+	int index = -1;
+	int type_id = 0;
+	if (!_find_property(p_name, &index, &type_id)) {
+		return false;
+	}
+	void *addr = object->GetAddressOfProperty((asUINT)index);
 	if (addr == nullptr) {
 		return false;
 	}
+	asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
+	if (engine == nullptr) {
+		return false;
+	}
+
+	if (type_id & asTYPEID_OBJHANDLE) {
+		asITypeInfo *ti = engine->GetTypeInfoById(type_id);
+		if (ti == nullptr) {
+			return false;
+		}
+		const ASBindingKind kind = _object_kind_for_type_name(String(ti->GetName()));
+		Object *o = as_handle_decode(*((void **)addr), kind);
+		r_ret = Variant(o);
+		return true;
+	}
+
+	if (type_id & asTYPEID_MASK_OBJECT) {
+		asITypeInfo *ti = engine->GetTypeInfoById(type_id);
+		if (ti == nullptr) {
+			return false;
+		}
+		// 小写内建 `string` 不是 Variant 存储，不做往返（见 set()）。
+		if (String(ti->GetName()) == "string") {
+			return false;
+		}
+		r_ret = *(const Variant *)addr;
+		return true;
+	}
+
 	// AS 的内存布局：bool 1 字节、int 4 字节、float 4 字节；这里按各自宽度读，避免越界。
 	switch (type_id & ~asTYPEID_OBJHANDLE) {
 		case asTYPEID_BOOL:
@@ -198,13 +302,47 @@ void ASScriptInstance::get_property_list(List<PropertyInfo> *p_properties) const
 }
 
 Variant::Type ASScriptInstance::get_property_type(const StringName &p_name, bool *r_is_valid) const {
+	int index = -1;
 	int type_id = 0;
-	if (_find_property(p_name, &type_id) < 0) {
+	if (!_find_property(p_name, &index, &type_id)) {
 		if (r_is_valid != nullptr) {
 			*r_is_valid = false;
 		}
 		return Variant::NIL;
 	}
+
+	if (type_id & asTYPEID_OBJHANDLE) {
+		// 对象句柄一律报 OBJECT（拥有与否由 _find_property 的静态类型决定，对外不可见）。
+		if (r_is_valid != nullptr) {
+			*r_is_valid = true;
+		}
+		return Variant::OBJECT;
+	}
+
+	if (type_id & asTYPEID_MASK_OBJECT) {
+		asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
+		asITypeInfo *ti = engine != nullptr ? engine->GetTypeInfoById(type_id) : nullptr;
+		if (ti == nullptr || object == nullptr || String(ti->GetName()) == "string") {
+			// 小写内建 `string` 不做往返，不能报成"有效 NIL"。
+			if (r_is_valid != nullptr) {
+				*r_is_valid = false;
+			}
+			return Variant::NIL;
+		}
+		void *addr = object->GetAddressOfProperty((asUINT)index);
+		if (addr == nullptr) {
+			if (r_is_valid != nullptr) {
+				*r_is_valid = false;
+			}
+			return Variant::NIL;
+		}
+		if (r_is_valid != nullptr) {
+			*r_is_valid = true;
+		}
+		// 内建值类型的槽就是一颗 Variant，类型信息直接取它的实际类型。
+		return (*(const Variant *)addr).get_type();
+	}
+
 	if (r_is_valid != nullptr) {
 		*r_is_valid = true;
 	}
