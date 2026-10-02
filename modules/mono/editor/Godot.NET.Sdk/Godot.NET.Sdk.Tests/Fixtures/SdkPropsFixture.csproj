@@ -7,7 +7,12 @@
     <Configurations>Debug;ExportDebug;ExportRelease</Configurations>
     <Configuration>ExportRelease</Configuration>
   </PropertyGroup>
-  <!-- Imported from the source tree so the test measures the working copy, not the NuGet cache. -->
-  <!-- Forward slash keeps the fixture valid on Windows and Unix alike. -->
+  <!--
+  Imports the full Sdk.props chain (which pulls in iOS.props when
+  GodotTargetPlatform=ios) and then Sdk.targets, so the platform property files
+  participate in evaluation. Use only with a staged copy of the Sdk source
+  folder that also contains SdkPackageVersions.props.
+  -->
+  <Import Project="$(GodotSdkSourceDir)/Sdk.props" />
   <Import Project="$(GodotSdkSourceDir)/Sdk.targets" />
 </Project>
