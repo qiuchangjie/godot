@@ -245,6 +245,11 @@ jobs:
         run: |
           dotnet test modules/mono/editor/Godot.NET.Sdk/Godot.SourceGenerators.Tests
 
+      - name: .NET SDK tests
+        if: matrix.build-mono
+        run: |
+          dotnet test modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests
+
       # Check class reference
       - name: Check for class reference updates
         if: matrix.doc-test
