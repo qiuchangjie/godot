@@ -239,10 +239,13 @@ void ASEngine::collect_garbage() {
 	if (!is_initialized() || engine == nullptr) {
 		return;
 	}
+	// 先清待回收标志，再执行 GC：GarbageCollect 会同步析构 AS 脚本对象，其析构
+	// 可能回调宿主并再次 request_gc()（例如脚本实例析构）。若在 GC 之后清标志，
+	// 这次新产生的请求会被吞掉；当 interval=0 时该请求将再无自动消费路径。
+	gc_pending = false;
 	engine->GarbageCollect(asGC_FULL_CYCLE);
 	last_gc_usec = OS::get_singleton()->get_ticks_usec();
 	gc_count++;
-	gc_pending = false;
 	print_verbose("[AngelScript] garbage collect");
 }
 

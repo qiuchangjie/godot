@@ -34,6 +34,7 @@
 
 void as_m3_gc_throttled();
 void as_m3_instance_dtor_requests_gc();
+void as_m3_gc_cycle_collected();
 
 #ifndef ANGELSCRIPT_M3_GC_TESTS_IMPL
 TEST_CASE("[AngelScript][M3] gc throttle") {
@@ -42,5 +43,9 @@ TEST_CASE("[AngelScript][M3] gc throttle") {
 
 TEST_CASE("[AngelScript][M3] instance destructor requests gc") {
 	as_m3_instance_dtor_requests_gc();
+}
+
+TEST_CASE("[AngelScript][M3] cyclic objects collected") {
+	as_m3_gc_cycle_collected();
 }
 #endif // ANGELSCRIPT_M3_GC_TESTS_IMPL

@@ -96,3 +96,73 @@ void as_m3_instance_dtor_requests_gc() {
 
 	engine->set_gc_interval_seconds(5.0);
 }
+
+// 探针：AS 对象析构时回调。除了计数，还再次请求回收，用来制造
+// 「GarbageCollect 执行期间又产生新请求」这一 I-1 场景。
+static int g_gc_collected = 0;
+static void _probe_gc_collected(asIScriptGeneric *) {
+	g_gc_collected++;
+	ASEngine::get_singleton()->request_gc();
+}
+
+void as_m3_gc_cycle_collected() {
+	ASEngine *engine = ASEngine::get_singleton();
+	REQUIRE(engine != nullptr);
+	REQUIRE(engine->ensure_initialized());
+	asIScriptEngine *as_engine = engine->get_engine();
+	ASBindingValueTypes::register_all(as_engine);
+
+	if (as_engine->GetGlobalFunctionByDecl("void probe_gc_collected()") == nullptr) {
+		REQUIRE(as_engine->RegisterGlobalFunction("void probe_gc_collected()", asFUNCTION(_probe_gc_collected), asCALL_GENERIC) >= 0);
+	}
+
+	// 两个互相引用的 AS 对象：外部句柄离开作用域后形成不可达环，只有 GC 能回收。
+	// 析构函数回调宿主探针，从而在 GarbageCollect 内部制造一次「新的回收请求」。
+	const String src =
+			"class node_a {\n"
+			"\tnode_b @other;\n"
+			"\t~node_a() { probe_gc_collected(); }\n"
+			"}\n"
+			"class node_b {\n"
+			"\tnode_a @other;\n"
+			"\t~node_b() { probe_gc_collected(); }\n"
+			"}\n"
+			"void build_cycle() {\n"
+			"\tnode_a @a = node_a();\n"
+			"\tnode_b @b = node_b();\n"
+			"\t@a.other = b;\n"
+			"\t@b.other = a;\n"
+			"}\n";
+	String err;
+	REQUIRE_MESSAGE(engine->compile_module("m3_gc_cycle_mod", src, &err), err);
+
+	asIScriptModule *mod = as_engine->GetModule("m3_gc_cycle_mod");
+	REQUIRE(mod != nullptr);
+	asIScriptFunction *build = mod->GetFunctionByDecl("void build_cycle()");
+	REQUIRE(build != nullptr);
+
+	// 关闭时间节流并清空 pending，确保计数变化只来自本轮 GC。
+	engine->set_gc_interval_seconds(0.0);
+	engine->maybe_collect_garbage();
+	g_gc_collected = 0;
+	const int base = engine->get_gc_count();
+
+	int exec_ret = 0;
+	REQUIRE(ASEngine::execute(as_engine, build, &exec_ret) == OK);
+	CHECK_MESSAGE(g_gc_collected == 0, "循环引用在回收前不应被析构");
+
+	// 间隔已关，显式请求一次完整回收；本次回收会销毁环并触发析构回调。
+	engine->request_gc();
+
+	// M-1：完整回收应销毁环上的两个对象（否则「循环引用可回收」未被真正验证）。
+	engine->maybe_collect_garbage();
+	CHECK_MESSAGE(g_gc_collected == 2, vformat("环上两个对象都应被回收，实际析构 %d 个", g_gc_collected));
+	CHECK(engine->get_gc_count() == base + 1);
+
+	// I-1：析构期间（GarbageCollect 内部）产生的回收请求不能被本次回收吞掉，
+	// 必须保留到下一次机会，否则 interval=0 时该请求会永久丢失。
+	engine->maybe_collect_garbage();
+	CHECK_MESSAGE(engine->get_gc_count() == base + 2, "回收期间新产生的请求被吞掉了");
+
+	engine->set_gc_interval_seconds(5.0);
+}
