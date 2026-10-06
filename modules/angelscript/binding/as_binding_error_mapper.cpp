@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  test_angelscript_lazy_binding.h                                       */
+/*  as_binding_error_mapper.cpp                                           */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,42 +28,54 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#include "as_binding_error_mapper.h"
 
-#include "tests/test_macros.h"
+namespace {
 
-// 用例注册头：不得 include 任何 AngelScript 头；实现见 test_angelscript_lazy_binding.cpp。
-
-void as_lazy_scanner_intersects_classdb();
-void as_lazy_scanner_ignores_comments_and_strings();
-void as_lazy_register_types_registers_subset_only();
-void as_lazy_facade_registers_core_and_dedups();
-void as_lazy_facade_fallback_is_idempotent();
-void as_lazy_error_mapper_extracts_classdb_identifiers();
-void as_lazy_error_mapper_no_progress_returns_false();
-
-#ifndef ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
-
-TEST_CASE("[AngelScript] lazy scanner intersects ClassDB") {
-	as_lazy_scanner_intersects_classdb();
-}
-TEST_CASE("[AngelScript] lazy scanner ignores comments and strings") {
-	as_lazy_scanner_ignores_comments_and_strings();
-}
-TEST_CASE("[AngelScript] lazy register_types registers subset only") {
-	as_lazy_register_types_registers_subset_only();
-}
-TEST_CASE("[AngelScript] lazy facade registers core and dedups") {
-	as_lazy_facade_registers_core_and_dedups();
-}
-TEST_CASE("[AngelScript] lazy facade fallback registers everything") {
-	as_lazy_facade_fallback_is_idempotent();
-}
-TEST_CASE("[AngelScript] lazy error mapper extracts ClassDB identifiers") {
-	as_lazy_error_mapper_extracts_classdb_identifiers();
-}
-TEST_CASE("[AngelScript] lazy error mapper returns false without progress") {
-	as_lazy_error_mapper_no_progress_returns_false();
+bool _is_ident_start(char32_t p_c) {
+	return (p_c >= 'A' && p_c <= 'Z') || (p_c >= 'a' && p_c <= 'z') || p_c == '_';
 }
 
-#endif // ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
+bool _is_ident_char(char32_t p_c) {
+	return _is_ident_start(p_c) || (p_c >= '0' && p_c <= '9');
+}
+
+} // namespace
+
+bool ASBindingErrorMapper::extract_from_message(const String &p_message, const ASBindingPlan &p_plan, ASBindingMissingSymbols *r_out) {
+	ERR_FAIL_NULL_V(r_out, false);
+
+	bool found = false;
+	const int len = p_message.length();
+	int i = 0;
+	while (i < len) {
+		if (!_is_ident_start(p_message[i])) {
+			i++;
+			continue;
+		}
+		const int start = i;
+		while (i < len && _is_ident_char(p_message[i])) {
+			i++;
+		}
+		// 只认可见集合里的类名：消息里的行号、文件名、成员名都不是类名，
+		// 误加入会触发一次无效注册。
+		const StringName ident = p_message.substr(start, i - start);
+		if (p_plan.has_class(ident) && !r_out->types.has(ident)) {
+			r_out->types.push_back(ident);
+			found = true;
+		}
+	}
+	return found;
+}
+
+bool ASBindingErrorMapper::extract(const Vector<String> &p_messages, const ASBindingPlan &p_plan, ASBindingMissingSymbols *r_out) {
+	ERR_FAIL_NULL_V(r_out, false);
+
+	bool found = false;
+	for (const String &msg : p_messages) {
+		if (extract_from_message(msg, p_plan, r_out)) {
+			found = true;
+		}
+	}
+	return found;
+}

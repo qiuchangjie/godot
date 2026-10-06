@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "../binding/as_binding_error_mapper.h"
 #include "../binding/as_binding_lazy.h"
 #include "../binding/as_binding_plan.h"
 #include "../binding/as_binding_registry.h"
@@ -152,4 +153,37 @@ void as_lazy_facade_fallback_is_idempotent() {
 
 	ASBindingLazyRegistry::get_singleton()->reset();
 	g_retained_engines.push_back(engine);
+}
+
+void as_lazy_error_mapper_extracts_classdb_identifiers() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope()); // 空 whitelist/blacklist：可见集合为全量。
+
+	ASBindingMissingSymbols out;
+	Vector<String> msgs;
+	// 真实文本（探针 Q2b 实证）：未注册类型时 AS 报 `Identifier 'X' is not a data type`，
+	// 其中 X 就是可注册的类名。
+	msgs.push_back("probe_q2b(2,3): Identifier 'Sprite2D' is not a data type");
+	CHECK(ASBindingErrorMapper::extract(msgs, plan, &out));
+	REQUIRE(out.types.size() == 1);
+	CHECK(out.types[0] == StringName("Sprite2D"));
+}
+
+void as_lazy_error_mapper_no_progress_returns_false() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope());
+
+	ASBindingMissingSymbols out;
+	Vector<String> msgs;
+	// 真实文本（探针 Q2 实证）：成员缺失时 AS 只报 `No matching symbol '<member>'`，
+	// 消息里没有宿主类名 ⇒ 无法推断归属类，必须返回 false 交由调用方全量兜底。
+	msgs.push_back("probe_q2(3,5): No matching symbol 'get_name'");
+	CHECK(!ASBindingErrorMapper::extract(msgs, plan, &out));
+	CHECK(out.types.is_empty());
+
+	// 可见集合之外的标识符同样不计为进展。
+	Vector<String> msgs2;
+	msgs2.push_back("probe(1,1): Identifier 'ThisClassDoesNotExist' is not a data type");
+	CHECK(!ASBindingErrorMapper::extract(msgs2, plan, &out));
+	CHECK(out.types.is_empty());
 }

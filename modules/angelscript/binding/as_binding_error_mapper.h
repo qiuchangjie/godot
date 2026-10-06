@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  test_angelscript_lazy_binding.h                                       */
+/*  as_binding_error_mapper.h                                             */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,40 +30,27 @@
 
 #pragma once
 
-#include "tests/test_macros.h"
+#include "as_binding_plan.h"
 
-// 用例注册头：不得 include 任何 AngelScript 头；实现见 test_angelscript_lazy_binding.cpp。
+#include "core/string/string_name.h"
+#include "core/string/ustring.h"
+#include "core/templates/vector.h"
 
-void as_lazy_scanner_intersects_classdb();
-void as_lazy_scanner_ignores_comments_and_strings();
-void as_lazy_register_types_registers_subset_only();
-void as_lazy_facade_registers_core_and_dedups();
-void as_lazy_facade_fallback_is_idempotent();
-void as_lazy_error_mapper_extracts_classdb_identifiers();
-void as_lazy_error_mapper_no_progress_returns_false();
+// 编译失败消息里「可注册但缺失」的符号集合。
+// types：消息中出现的类名（阶段 1 建骨架后，只有未注册成员的类型名才会出现）；
+// globals：预留的全局函数/常量名，当前实现不填充（无消费者）。
+struct ASBindingMissingSymbols {
+	Vector<StringName> types;
+	Vector<StringName> globals;
+};
 
-#ifndef ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
-
-TEST_CASE("[AngelScript] lazy scanner intersects ClassDB") {
-	as_lazy_scanner_intersects_classdb();
-}
-TEST_CASE("[AngelScript] lazy scanner ignores comments and strings") {
-	as_lazy_scanner_ignores_comments_and_strings();
-}
-TEST_CASE("[AngelScript] lazy register_types registers subset only") {
-	as_lazy_register_types_registers_subset_only();
-}
-TEST_CASE("[AngelScript] lazy facade registers core and dedups") {
-	as_lazy_facade_registers_core_and_dedups();
-}
-TEST_CASE("[AngelScript] lazy facade fallback registers everything") {
-	as_lazy_facade_fallback_is_idempotent();
-}
-TEST_CASE("[AngelScript] lazy error mapper extracts ClassDB identifiers") {
-	as_lazy_error_mapper_extracts_classdb_identifiers();
-}
-TEST_CASE("[AngelScript] lazy error mapper returns false without progress") {
-	as_lazy_error_mapper_no_progress_returns_false();
-}
-
-#endif // ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
+// 编译错误驱动的增量注册：从 AS 的编译消息里尽力提取可注册的类型名。
+// 刻意「宁可漏、不可错」：只有能匹配到 p_plan 可见类的标识符才算进展；
+// 一旦无法提取新符号就返回 false，由调用方走全量兜底（Q4 裁决）。
+class ASBindingErrorMapper {
+public:
+	// 聚合扫描多条消息；返回是否提取到此前未记录的新符号。
+	static bool extract(const Vector<String> &p_messages, const ASBindingPlan &p_plan, ASBindingMissingSymbols *r_out);
+	// 扫描单条消息。
+	static bool extract_from_message(const String &p_message, const ASBindingPlan &p_plan, ASBindingMissingSymbols *r_out);
+};
