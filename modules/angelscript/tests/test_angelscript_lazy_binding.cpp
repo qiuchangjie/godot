@@ -30,11 +30,14 @@
 
 #include "../as_engine.h"
 
+#include "../binding/as_binding_dumper.h"
 #include "../binding/as_binding_error_mapper.h"
 #include "../binding/as_binding_lazy.h"
 #include "../binding/as_binding_plan.h"
 #include "../binding/as_binding_registry.h"
 #include "../binding/as_binding_scanner.h"
+
+#include "core/io/file_access.h"
 
 #include <angelscript.h>
 
@@ -215,4 +218,23 @@ void as_lazy_scan_project_toggle_controls_preheat() {
 	sources.push_back("void f() { Sprite2D s; }"); // 阶段 1 应据此预注册 Sprite2D。
 	ASBindingLazyRegistry::get_singleton()->ensure_initialized(plan, engine, sources); // 默认 scan_project=true。
 	CHECK(ASBindingLazyRegistry::get_singleton()->is_registered(StringName("Sprite2D")));
+}
+
+void as_lazy_metadata_dump_is_full_without_registration() {
+	// 守护测试：编辑器补全 / `angelscript_api.d.as` 必须由 plan 生成全量声明，
+	// 不得依赖运行期注册集合——否则惰性注册会让补全与 `.d.as` 一并「缩水」。
+	// 本用例刻意不初始化 AS 引擎、不做任何注册，只凭 plan 转储。
+	ASBindingPlan plan;
+	plan.build(ASBindingScope()); // 空 whitelist：全量可见。
+	CHECK(plan.get_classes().size() > 1000); // 全量 ~1047 类。
+
+	CHECK(ASBindingDumper::write(plan, "user://as_lazy_dump") == OK);
+
+	Ref<FileAccess> f = FileAccess::open("user://as_lazy_dump/angelscript_api.d.as", FileAccess::READ);
+	REQUIRE(f.is_valid());
+	if (f.is_null()) {
+		return; // 无异常模式：REQUIRE 失败后必须显式返回，否则后续解引用会崩溃。
+	}
+	const String head = f->get_line();
+	CHECK(head.begins_with("// angelscript-api-version:"));
 }

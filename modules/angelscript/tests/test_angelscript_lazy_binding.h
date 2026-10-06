@@ -43,6 +43,7 @@ void as_lazy_error_mapper_extracts_classdb_identifiers();
 void as_lazy_error_mapper_no_progress_returns_false();
 void as_lazy_compile_module_recovers_missing_type();
 void as_lazy_scan_project_toggle_controls_preheat();
+void as_lazy_metadata_dump_is_full_without_registration();
 
 #ifndef ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
 
@@ -72,6 +73,9 @@ TEST_CASE("[AngelScript] lazy compile_module recovers missing type") {
 }
 TEST_CASE("[AngelScript] lazy scan_project toggle controls preheat") {
 	as_lazy_scan_project_toggle_controls_preheat();
+}
+TEST_CASE("[AngelScript] lazy metadata dump is full without registration") {
+	as_lazy_metadata_dump_is_full_without_registration();
 }
 
 #endif // ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
