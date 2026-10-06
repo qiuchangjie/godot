@@ -1,0 +1,112 @@
+name: R1 NativeAOT Desktop
+
+# Verifies that the Godot.NET.Sdk rooting fix (see the R-1 desktop NativeAOT spec)
+# behaves the same on Linux and macOS as it does on Windows:
+#   1. the SDK rooting unit tests pass on the platform,
+#   2. the SDK packed from the working copy roots GodotSharp + the game assembly,
+#   3. a real NativeAOT publish produces a native shared library.
+# It does NOT run a Godot runtime probe (that needs a per-platform engine template).
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/r1-nativeaot-desktop.yml"
+      - "modules/mono/editor/Godot.NET.Sdk/**"
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+
+jobs:
+  nativeaot:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            rid: linux-x64
+            artifact: R1AotSample.so
+            artifact_type: ELF
+          - name: osx-arm64
+            os: macos-14
+            rid: osx-arm64
+            artifact: R1AotSample.dylib
+            artifact_type: Mach-O
+          - name: osx-x64
+            os: macos-13
+            rid: osx-x64
+            artifact: R1AotSample.dylib
+            artifact_type: Mach-O
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install NativeAOT toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev
+
+      - name: Generate SdkPackageVersions.props
+        run: python3 -c "import sys; sys.path.insert(0, 'modules/mono/build_scripts'); import build_assemblies as b; b.generate_sdk_package_versions()"
+
+      - name: .NET SDK rooting tests
+        run: dotnet test modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests --nologo
+
+      - name: Pack Godot.NET.Sdk into the sample's local feed
+        run: |
+          mkdir -p modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests/AotSample/local-feed
+          dotnet pack modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk/Godot.NET.Sdk.csproj \
+            -c Release \
+            -o modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests/AotSample/local-feed \
+            -p:PackageVersion=4.7.0-local \
+            -p:GeneratePackageOnBuild=false \
+            --nologo
+          # GeneratePackageOnBuild=false keeps the repo's CopyNupkgToSConsOutputDir
+          # target (modules/mono/Directory.Build.targets) from firing; `dotnet pack`
+          # still emits the package into the local feed.
+
+      - name: Assert roots come from the packed SDK (AOT on)
+        working-directory: modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests/AotSample
+        run: |
+          dotnet restore AotSample.csproj --nologo
+          dotnet msbuild AotSample.csproj -getItem:TrimmerRootAssembly -nologo \
+            -p:RuntimeIdentifier=${{ matrix.rid }} | tee roots.json
+          grep -q '"GodotSharp"' roots.json
+          grep -q '"R1AotSample"' roots.json
+
+      - name: Assert no roots leak when PublishAot is off
+        working-directory: modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests/AotSample
+        run: |
+          dotnet msbuild AotSample.csproj -getItem:TrimmerRootAssembly -nologo \
+            -p:RuntimeIdentifier=${{ matrix.rid }} -p:PublishAot=false | tee noaot.json
+          grep -Eq '"TrimmerRootAssembly"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]' noaot.json
+
+      - name: NativeAOT publish
+        working-directory: modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests/AotSample
+        run: |
+          dotnet publish AotSample.csproj -c Release -r ${{ matrix.rid }} \
+            -p:PublishAot=true -o publish-out --nologo
+          test -f "publish-out/${{ matrix.artifact }}"
+          file "publish-out/${{ matrix.artifact }}" | tee file.txt
+          grep -q '${{ matrix.artifact_type }}' file.txt
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: r1-nativeaot-${{ matrix.rid }}
+          path: modules/mono/editor/Godot.NET.Sdk/Godot.NET.Sdk.Tests/AotSample/publish-out/${{ matrix.artifact }}
+          if-no-files-found: error
