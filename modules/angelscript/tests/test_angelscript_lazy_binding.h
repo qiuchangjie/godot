@@ -37,6 +37,8 @@
 void as_lazy_scanner_intersects_classdb();
 void as_lazy_scanner_ignores_comments_and_strings();
 void as_lazy_register_types_registers_subset_only();
+void as_lazy_facade_registers_core_and_dedups();
+void as_lazy_facade_fallback_is_idempotent();
 
 #ifndef ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
 
@@ -48,6 +50,12 @@ TEST_CASE("[AngelScript] lazy scanner ignores comments and strings") {
 }
 TEST_CASE("[AngelScript] lazy register_types registers subset only") {
 	as_lazy_register_types_registers_subset_only();
+}
+TEST_CASE("[AngelScript] lazy facade registers core and dedups") {
+	as_lazy_facade_registers_core_and_dedups();
+}
+TEST_CASE("[AngelScript] lazy facade fallback registers everything") {
+	as_lazy_facade_fallback_is_idempotent();
 }
 
 #endif // ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL

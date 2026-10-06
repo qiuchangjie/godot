@@ -28,6 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "../binding/as_binding_lazy.h"
 #include "../binding/as_binding_plan.h"
 #include "../binding/as_binding_registry.h"
 #include "../binding/as_binding_scanner.h"
@@ -36,6 +37,10 @@
 
 #define ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
 #include "test_angelscript_lazy_binding.h"
+
+// 注册守卫按引擎指针记录，释放后地址可能被下一个引擎复用从而误判「已注册」。
+// 在测试进程内保留这些引擎可保证地址唯一。
+static Vector<asIScriptEngine *> g_retained_engines;
 
 void as_lazy_scanner_intersects_classdb() {
 	HashSet<StringName> types;
@@ -83,6 +88,68 @@ void as_lazy_register_types_registers_subset_only() {
 
 	// 保留引擎不释放：注册守卫按引擎指针记录，释放后地址可能被下一个引擎复用，
 	// 从而误判「已注册」。测试进程内保留这些引擎可保证地址唯一。
-	static Vector<asIScriptEngine *> g_retained_engines;
+	g_retained_engines.push_back(engine);
+}
+
+void as_lazy_facade_registers_core_and_dedups() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope()); // 空 whitelist/blacklist：可见集合为全量。
+
+	asIScriptEngine *engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
+	REQUIRE(engine != nullptr);
+
+	ASBindingLazyRegistry::get_singleton()->reset();
+	ASBindingLazyRegistry::get_singleton()->ensure_initialized(plan, engine, Vector<String>());
+
+	// core 契约：Object 必须立即可用；但尚未全量。
+	CHECK(ASBindingLazyRegistry::get_singleton()->is_registered(StringName("Object")));
+	CHECK(!ASBindingLazyRegistry::get_singleton()->is_full());
+
+	// 去重：重复注册同一批类，返回 0（无新增）。
+	Vector<StringName> again;
+	again.push_back(StringName("Object"));
+	CHECK(ASBindingLazyRegistry::get_singleton()->ensure_registered(plan, again, engine) == 0);
+
+	// 未注册且在可见集合内：新增注册，返回 1。
+	Vector<StringName> node;
+	node.push_back(StringName("Node"));
+	CHECK(ASBindingLazyRegistry::get_singleton()->ensure_registered(plan, node, engine) == 1);
+	CHECK(ASBindingLazyRegistry::get_singleton()->is_registered(StringName("Node")));
+
+	// 不在可见集合内（不存在于 plan）：静默忽略，返回 0 且不得记入已注册。
+	Vector<StringName> unknown;
+	unknown.push_back(StringName("ThisClassDoesNotExist"));
+	CHECK(ASBindingLazyRegistry::get_singleton()->ensure_registered(plan, unknown, engine) == 0);
+	CHECK(!ASBindingLazyRegistry::get_singleton()->is_registered(StringName("ThisClassDoesNotExist")));
+
+	// 已是注册成员：再次请求返回 0（去重）。
+	CHECK(ASBindingLazyRegistry::get_singleton()->ensure_registered(plan, node, engine) == 0);
+
+	ASBindingLazyRegistry::get_singleton()->reset();
+	g_retained_engines.push_back(engine);
+}
+
+void as_lazy_facade_fallback_is_idempotent() {
+	// 用白名单收窄可见集合：全量注册测试里约 1047 类会拖慢整套用例，
+	// 白名单下的 plan 仍是「完整可见集合」，足以验证兜底语义。
+	ASBindingScope scope;
+	scope.whitelist.push_back("Node");
+	ASBindingPlan plan;
+	plan.build(scope);
+
+	asIScriptEngine *engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
+	REQUIRE(engine != nullptr);
+
+	ASBindingLazyRegistry::get_singleton()->reset();
+	ASBindingLazyRegistry::get_singleton()->register_all(plan, engine);
+	CHECK(ASBindingLazyRegistry::get_singleton()->is_full());
+	CHECK(ASBindingLazyRegistry::get_singleton()->is_registered(StringName("Node")));
+
+	// 兜底后再 ensure_registered 是 no-op（不重复注册、不报错）。
+	Vector<StringName> t;
+	t.push_back(StringName("Node"));
+	CHECK(ASBindingLazyRegistry::get_singleton()->ensure_registered(plan, t, engine) == 0);
+
+	ASBindingLazyRegistry::get_singleton()->reset();
 	g_retained_engines.push_back(engine);
 }

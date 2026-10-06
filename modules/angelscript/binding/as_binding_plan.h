@@ -112,4 +112,7 @@ public:
 
 	// 稳定序列化：用于 .d.as 版本 hash 与 dump 确定性测试（Task 5）。
 	String serialize_stable() const;
+
+	// 类型是否在可见集合内（供惰性注册过滤黑名单/白名单）。
+	bool has_class(const StringName &p_name) const;
 };

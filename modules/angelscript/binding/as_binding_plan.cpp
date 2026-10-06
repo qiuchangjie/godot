@@ -302,6 +302,15 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 	classes.push_back(c);
 }
 
+bool ASBindingPlan::has_class(const StringName &p_name) const {
+	for (const ASBindingClass &c : classes) {
+		if (c.name == p_name) {
+			return true;
+		}
+	}
+	return false;
+}
+
 String ASBindingPlan::serialize_stable() const {
 	Vector<String> lines;
 	for (const ASBindingValueType &v : value_types) {
