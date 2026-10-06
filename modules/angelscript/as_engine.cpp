@@ -140,7 +140,13 @@ bool ASEngine::ensure_initialized() {
 	engine->SetMessageCallback(asFUNCTION(_message_callback), this, asCALL_CDECL);
 
 	_register_builtins();
+
+	// 一次性绑定初始化是启动期的大头（惰性注册下 = 值类型 + 全部对象骨架 + core + 工程扫描）。
+	// 用 --verbose 记录一次，供性能回归与后续调优对照（spec §7.4）。
+	const uint64_t init_begin_ms = OS::get_singleton()->get_ticks_msec();
 	_initialize_binding();
+	const uint64_t init_ms = OS::get_singleton()->get_ticks_msec() - init_begin_ms;
+	print_verbose(vformat("ANGELSCRIPT_INIT_MS=%d", init_ms));
 	return true;
 }
 
