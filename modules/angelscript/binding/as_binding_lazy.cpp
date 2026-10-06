@@ -90,6 +90,7 @@ void ASBindingLazyRegistry::_register_type_set(const ASBindingPlan &p_plan, cons
 	if (to_add.is_empty()) {
 		return;
 	}
+	// 返回值有意忽略：子集注册若失败，由编译重试与全量兜底收敛。
 	ASBindingRegistry::register_types(p_plan, to_add, p_engine);
 	for (const StringName &t : to_add) {
 		registered.insert(t);

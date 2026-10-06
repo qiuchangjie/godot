@@ -41,6 +41,7 @@ void as_lazy_facade_registers_core_and_dedups();
 void as_lazy_facade_fallback_is_idempotent();
 void as_lazy_error_mapper_extracts_classdb_identifiers();
 void as_lazy_error_mapper_no_progress_returns_false();
+void as_lazy_compile_module_recovers_missing_type();
 
 #ifndef ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
 
@@ -64,6 +65,9 @@ TEST_CASE("[AngelScript] lazy error mapper extracts ClassDB identifiers") {
 }
 TEST_CASE("[AngelScript] lazy error mapper returns false without progress") {
 	as_lazy_error_mapper_no_progress_returns_false();
+}
+TEST_CASE("[AngelScript] lazy compile_module recovers missing type") {
+	as_lazy_compile_module_recovers_missing_type();
 }
 
 #endif // ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL

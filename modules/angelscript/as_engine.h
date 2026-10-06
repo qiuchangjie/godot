@@ -33,6 +33,7 @@
 #include "binding/as_binding_plan.h"
 #include "core/error/error_list.h"
 #include "core/string/ustring.h"
+#include "core/templates/vector.h"
 #include "core/variant/variant.h"
 
 #include <angelscript.h>
@@ -59,6 +60,12 @@ class ASEngine {
 	void _register_builtins();
 	// 内省 ClassDB 并注册绑定层（值类型 / 对象类型 / 枚举 / @GlobalScope 工具函数）。
 	void _initialize_binding();
+
+	// 编译期消息缓冲：只在 _capture_messages 为真时收集，供阶段 2 提取缺失符号。
+	Vector<String> compile_messages;
+	bool capture_messages = false;
+	// 阶段 2 重试上限：超过即全量兜底（防止无限循环）。
+	static const int MAX_BINDING_RETRIES = 8;
 
 public:
 	static ASEngine *get_singleton();

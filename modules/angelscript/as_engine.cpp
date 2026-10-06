@@ -32,6 +32,8 @@
 
 #include "as_script_instance.h"
 #include "binding/as_binding_decl.h"
+#include "binding/as_binding_error_mapper.h"
+#include "binding/as_binding_lazy.h"
 #include "binding/as_binding_object.h"
 #include "binding/as_binding_registry.h"
 #include "core/object/object.h"
@@ -52,6 +54,9 @@ void ASEngine::_message_callback(const asSMessageInfo *p_msg, void *p_param) {
 		self->last_error += "\n";
 	}
 	self->last_error += String(p_msg->section ? p_msg->section : "") + "(" + itos(p_msg->row) + "," + itos(p_msg->col) + "): " + String(p_msg->message ? p_msg->message : "");
+	if (self->capture_messages) {
+		self->compile_messages.push_back(String(p_msg->message ? p_msg->message : ""));
+	}
 }
 
 // 内建函数一律走泛型调用约定（asCALL_GENERIC）：设计 §3 约定绑定层统一使用泛型调用，
@@ -146,7 +151,14 @@ void ASEngine::_register_builtins() {
 void ASEngine::_initialize_binding() {
 	// 计划构建会读取 angel_script/class_whitelist 与 class_blacklist（默认全放行）。
 	binding_plan.build(ASBindingScope::from_project_settings());
-	ASBindingRegistry::register_plan(binding_plan, engine);
+
+	// 阶段 1：core + 工程扫描成员。scan_project 时传入工程全部 .as 源。
+	// 首版留空：阶段 2（编译失败重试）会按需补齐，不影响正确性，只是首次编译可能多一次兜底。
+	Vector<String> sources;
+	if (ASBindingLazyRegistry::scan_project_enabled()) {
+		// 工程 .as 源枚举见 Task 6；此处为空列表。
+	}
+	ASBindingLazyRegistry::get_singleton()->ensure_initialized(binding_plan, engine, sources);
 
 	// as_log_string 的签名用到绑定层的 Godot `String` 值类型，必须等到值类型注册之后
 	// 才能注册（否则 AS 会因未知类型报错并把引擎标记为配置错误且不可恢复）。
@@ -166,30 +178,56 @@ bool ASEngine::compile_module(const String &p_name, const String &p_source, Stri
 	ERR_FAIL_NULL_V(engine, false);
 
 	last_error = String();
-
-	// asGM_ALWAYS_CREATE：同名模块整体替换，符合"热更=替换"的语义（spec §7）。
-	// 具名 CharString 承载模块名，避免 `p_name.utf8().get_data()` 的临时对象生命周期含糊。
 	CharString module_cstr = p_name.utf8();
-	asIScriptModule *mod = engine->GetModule(module_cstr.get_data(), asGM_ALWAYS_CREATE);
-	if (mod == nullptr) {
-		if (r_error) {
-			*r_error = "failed to create AngelScript module: " + p_name;
-		}
-		return false;
-	}
-
 	CharString src = p_source.utf8();
-	if (mod->AddScriptSection(module_cstr.get_data(), src.get_data(), src.length()) < 0) {
-		// asGM_ALWAYS_CREATE 已经替换掉同名旧模块；这里失败必须丢弃新模块，否则会留下一个
-		// 没有 section 的孤儿模块（ASScript::compile_source 失败时不会记录 module_name）。
-		if (r_error) {
-			*r_error = "failed to add script section: " + p_name;
-		}
-		engine->DiscardModule(module_cstr.get_data());
-		return false;
-	}
 
-	if (mod->Build() < 0) {
+	// 阶段 2：编译失败且缺失绑定可识别时，增量注册后丢弃模块重编；无进展/达上限则全量兜底后重编一次。
+	// 用户脚本自身错误在兜底后原样报出（不掩盖、不放大）。
+	for (int attempt = 0; attempt <= MAX_BINDING_RETRIES; attempt++) {
+		last_error = String();
+		compile_messages.clear();
+		capture_messages = true;
+
+		asIScriptModule *mod = engine->GetModule(module_cstr.get_data(), asGM_ALWAYS_CREATE);
+		if (mod == nullptr) {
+			capture_messages = false;
+			if (r_error) {
+				*r_error = "failed to create AngelScript module: " + p_name;
+			}
+			return false;
+		}
+		if (mod->AddScriptSection(module_cstr.get_data(), src.get_data(), src.length()) < 0) {
+			capture_messages = false;
+			if (r_error) {
+				*r_error = "failed to add script section: " + p_name;
+			}
+			engine->DiscardModule(module_cstr.get_data());
+			return false;
+		}
+		const int build_result = mod->Build();
+		capture_messages = false;
+		if (build_result >= 0) {
+			return true;
+		}
+
+		// 失败：尝试按缺失符号做增量补齐。
+		const bool full_before = ASBindingLazyRegistry::get_singleton()->is_full();
+		if (!full_before) {
+			ASBindingMissingSymbols missing;
+			if (ASBindingErrorMapper::extract(compile_messages, binding_plan, &missing) && !missing.types.is_empty()) {
+				const int64_t added = ASBindingLazyRegistry::get_singleton()->ensure_registered(binding_plan, missing.types, engine);
+				if (added > 0) {
+					engine->DiscardModule(module_cstr.get_data());
+					continue; // 有进展：重编。
+				}
+			}
+			// 无进展或无法识别：全量兜底后重编一次。
+			ASBindingLazyRegistry::get_singleton()->register_all(binding_plan, engine);
+			engine->DiscardModule(module_cstr.get_data());
+			continue;
+		}
+
+		// 已兜底仍失败：用户脚本自身错误，原样报出。
 		if (r_error) {
 			*r_error = last_error.is_empty() ? "AngelScript build failed: " + p_name : last_error;
 		}
@@ -197,7 +235,12 @@ bool ASEngine::compile_module(const String &p_name, const String &p_source, Stri
 		return false;
 	}
 
-	return true;
+	// 理论上不可达：循环内每次 continue 前后都有终止条件。
+	if (r_error) {
+		*r_error = last_error.is_empty() ? "AngelScript build failed: " + p_name : last_error;
+	}
+	engine->DiscardModule(module_cstr.get_data());
+	return false;
 }
 
 Error ASEngine::execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int *r_ret) {

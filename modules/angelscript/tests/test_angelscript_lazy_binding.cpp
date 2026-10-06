@@ -28,6 +28,8 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "../as_engine.h"
+
 #include "../binding/as_binding_error_mapper.h"
 #include "../binding/as_binding_lazy.h"
 #include "../binding/as_binding_plan.h"
@@ -186,4 +188,17 @@ void as_lazy_error_mapper_no_progress_returns_false() {
 	msgs2.push_back("probe(1,1): Identifier 'ThisClassDoesNotExist' is not a data type");
 	CHECK(!ASBindingErrorMapper::extract(msgs2, plan, &out));
 	CHECK(out.types.is_empty());
+}
+
+void as_lazy_compile_module_recovers_missing_type() {
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as != nullptr);
+	REQUIRE(as->ensure_initialized()); // 此时只注册了 core + 扫描结果（空工程）。
+
+	String err;
+	// Sprite2D 的成员未被 core 注册。首编失败消息只含成员名（无宿主类名），
+	// 映射器无法定位归属，compile_module 走全量兜底后重编成功。
+	const String src = "void probe() { Sprite2D s; s.set_position(Vector2(1, 2)); }";
+	CHECK(as->compile_module("lazy_recover", src, &err));
+	CHECK(err.is_empty());
 }

@@ -37,6 +37,7 @@
 #include "core/object/method_info.h"
 #include "core/os/memory.h"
 #include "core/string/string_name.h"
+#include "core/templates/hash_set.h"
 #include "core/templates/list.h"
 #include "core/variant/callable.h"
 
@@ -90,6 +91,11 @@ void generic_utility_call(asIScriptGeneric *p_gen) {
 	}
 	as_binding_marshal_return(p_gen, binding->return_kind, ret);
 }
+
+// 已注册 @GlobalScope 工具函数的引擎集合：RegisterGlobalFunction 重复同名声明会返回
+// 负值，而 AS 内部会因此把引擎永久标记为 configFailed（不可恢复）。惰性路径与全量兜底
+// 都会调用 register_globals，必须按引擎幂等。
+static HashSet<asIScriptEngine *> g_globals_engines;
 
 // 注册所有“签名可表达”的 @GlobalScope 工具函数。vararg（如 print）或签名里出现
 // Variant 的工具函数（如 clamp）在 M2 无法表达，统一跳过（见 README 的已知限制）。
@@ -178,6 +184,11 @@ Error ASBindingRegistry::register_types(const ASBindingPlan &p_plan, const Vecto
 
 Error ASBindingRegistry::register_globals(asIScriptEngine *p_engine) {
 	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
+	// 幂等：重复注册同名全局函数会污染引擎（configFailed 不可恢复）。
+	if (g_globals_engines.has(p_engine)) {
+		return OK;
+	}
+	g_globals_engines.insert(p_engine);
 	register_global_functions(p_engine);
 	return OK;
 }
