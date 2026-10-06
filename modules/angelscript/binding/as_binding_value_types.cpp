@@ -533,7 +533,13 @@ static void register_string_support(asIScriptEngine *p_engine) {
 	}
 }
 
-static asIScriptEngine *g_registered_engine = nullptr;
+// 值类型注册是「每引擎一次」，因此注册状态按引擎指针记录。
+// 早前的单指针写法在多引擎场景（单元测试、引擎销毁后重建）下会让第二个引擎
+// 拿不到值类型骨架，之后任何引用 String/Vector2 等的 Register* 都会失败，
+// 而 AS 一旦有 Register* 失败就会永久置 configFailed。
+static HashSet<asIScriptEngine *> g_registered_engines;
+// 同上：Variant 对象转换构造器每个引擎只需注册一次。
+static HashSet<asIScriptEngine *> g_object_conv_engines;
 
 // 注册依赖对象类型的 Variant 转换构造器（`Variant(Object @)`）。
 // 必须在全部对象骨架注册完成之后调用：值类型阶段解析不到 `Object` 类型名，
@@ -542,8 +548,7 @@ Error ASBindingValueTypes::register_object_conversions(asIScriptEngine *p_engine
 	if (!p_engine) {
 		return ERR_INVALID_PARAMETER;
 	}
-	static asIScriptEngine *g_object_conv_engine = nullptr;
-	if (g_object_conv_engine == p_engine) {
+	if (g_object_conv_engines.has(p_engine)) {
 		return OK; // 幂等：同一引擎只注册一次。
 	}
 	if (p_engine->GetTypeInfoByName("Object") == nullptr) {
@@ -558,7 +563,7 @@ Error ASBindingValueTypes::register_object_conversions(asIScriptEngine *p_engine
 	b->param_kinds.push_back(AS_KIND_OBJECT_NONOWNING);
 	add_behaviour(p_engine, String("Variant").utf8(), asBEHAVE_CONSTRUCT, "void f(Object @)", b);
 
-	g_object_conv_engine = p_engine;
+	g_object_conv_engines.insert(p_engine);
 	return OK;
 }
 
@@ -566,10 +571,10 @@ Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 	if (!p_engine) {
 		return ERR_INVALID_PARAMETER;
 	}
-	if (g_registered_engine == p_engine) {
+	if (g_registered_engines.has(p_engine)) {
 		return OK; // 同一引擎只注册一次。
 	}
-	g_registered_engine = p_engine;
+	g_registered_engines.insert(p_engine);
 
 	static const Variant::Type TYPES[] = {
 		Variant::STRING, Variant::STRING_NAME, Variant::NODE_PATH, Variant::RID,

@@ -40,7 +40,17 @@
 // 运行期注册与 .d.as dump 消费同一份 plan，避免两边各写一套内省逻辑而漂移。
 class ASBindingRegistry {
 public:
-	// 顺序是硬约束：值类型 → 全部对象骨架 → 全部对象成员 → 枚举。
-	// 方法签名会跨类引用，所以骨架必须先行；AS 里任何一次 Register* 失败都会永久污染引擎。
+	// 全量注册（保持改动前的语义，作为全量兜底与 startup_mode="full" 的路径）。
 	static Error register_plan(const ASBindingPlan &p_plan, asIScriptEngine *p_engine);
+
+	// 阶段 A：全部值类型 + 全部对象骨架 + Variant 对象转换构造器。
+	// 骨架每类约 3 次 Register* 调用（~1047 类），是子集成员注册安全的前提：
+	// 任何成员签名引用的类名此时都已存在，不会因「未知类型」触发不可恢复的 configFailed。
+	static Error register_value_types_and_skeletons(const ASBindingPlan &p_plan, asIScriptEngine *p_engine);
+
+	// 阶段 B：只注册 p_types 中列出的类的成员与枚举（幂等由调用方与 ASBindingObject 保证）。
+	static Error register_types(const ASBindingPlan &p_plan, const Vector<StringName> &p_types, asIScriptEngine *p_engine);
+
+	// 阶段 C：@GlobalScope 工具函数（只依赖已注册的值类型）。
+	static Error register_globals(asIScriptEngine *p_engine);
 };

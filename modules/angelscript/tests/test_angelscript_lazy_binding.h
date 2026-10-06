@@ -36,6 +36,7 @@
 
 void as_lazy_scanner_intersects_classdb();
 void as_lazy_scanner_ignores_comments_and_strings();
+void as_lazy_register_types_registers_subset_only();
 
 #ifndef ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL
 
@@ -44,6 +45,9 @@ TEST_CASE("[AngelScript] lazy scanner intersects ClassDB") {
 }
 TEST_CASE("[AngelScript] lazy scanner ignores comments and strings") {
 	as_lazy_scanner_ignores_comments_and_strings();
+}
+TEST_CASE("[AngelScript] lazy register_types registers subset only") {
+	as_lazy_register_types_registers_subset_only();
 }
 
 #endif // ANGELSCRIPT_LAZY_BINDING_TESTS_IMPL

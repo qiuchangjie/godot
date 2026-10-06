@@ -128,7 +128,7 @@ void register_global_functions(asIScriptEngine *p_engine) {
 
 } // namespace
 
-Error ASBindingRegistry::register_plan(const ASBindingPlan &p_plan, asIScriptEngine *p_engine) {
+Error ASBindingRegistry::register_value_types_and_skeletons(const ASBindingPlan &p_plan, asIScriptEngine *p_engine) {
 	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
 
 	const Error err = ASBindingValueTypes::register_all(p_engine);
@@ -136,20 +136,64 @@ Error ASBindingRegistry::register_plan(const ASBindingPlan &p_plan, asIScriptEng
 		return err;
 	}
 
-	// 两遍注册：先给所有类建骨架，再挂成员。方法签名会引用其他类，
+	// 两遍注册的第一遍：先给所有类建骨架，再挂成员。方法签名会引用其他类，
 	// 一次性逐类注册会让先注册的类因“未知类型”失败，而 AS 里任何一次
 	// Register* 失败都会把引擎标记为配置错误且不可恢复。
 	for (const ASBindingClass &c : p_plan.get_classes()) {
-		ASBindingObject::register_skeleton(c, p_engine);
+		const Error e = ASBindingObject::register_skeleton(c, p_engine);
+		ERR_FAIL_COND_V_MSG(e != OK, e, vformat("AngelScript: skeleton registration failed for '%s'", c.name));
 	}
 	// 对象骨架齐备后，才能注册依赖 `Object` 类型名的 Variant 转换构造器。
-	Error conv_err = ASBindingValueTypes::register_object_conversions(p_engine);
-	ERR_FAIL_COND_V_MSG(conv_err != OK, conv_err, "AngelScript: failed to register Variant object constructors");
-	for (const ASBindingClass &c : p_plan.get_classes()) {
-		ASBindingObject::register_class(c, p_engine);
+	return ASBindingValueTypes::register_object_conversions(p_engine);
+}
+
+Error ASBindingRegistry::register_types(const ASBindingPlan &p_plan, const Vector<StringName> &p_types, asIScriptEngine *p_engine) {
+	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
+
+	HashSet<StringName> wanted;
+	wanted.reserve(p_types.size());
+	for (const StringName &t : p_types) {
+		wanted.insert(t);
 	}
 
-	ASBindingObject::register_enums(p_plan.get_enums(), p_engine);
+	// 两遍注册的第二遍：只挂被请求的类的成员。枚举的 scope 即其所属类，随宿主类一起注册。
+	for (const ASBindingClass &c : p_plan.get_classes()) {
+		if (!wanted.has(c.name)) {
+			continue;
+		}
+		const Error e = ASBindingObject::register_class(c, p_engine);
+		ERR_FAIL_COND_V_MSG(e != OK, e, vformat("AngelScript: member registration failed for '%s'", c.name));
+
+		Vector<ASBindingEnum> enums;
+		for (const ASBindingEnum &en : p_plan.get_enums()) {
+			if (en.scope == c.name) {
+				enums.push_back(en);
+			}
+		}
+		const Error ee = ASBindingObject::register_enums(enums, p_engine);
+		ERR_FAIL_COND_V_MSG(ee != OK, ee, vformat("AngelScript: enum registration failed for '%s'", c.name));
+	}
+	return OK;
+}
+
+Error ASBindingRegistry::register_globals(asIScriptEngine *p_engine) {
+	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
 	register_global_functions(p_engine);
 	return OK;
+}
+
+Error ASBindingRegistry::register_plan(const ASBindingPlan &p_plan, asIScriptEngine *p_engine) {
+	Error err = register_value_types_and_skeletons(p_plan, p_engine);
+	ERR_FAIL_COND_V(err != OK, err);
+
+	// 全量：一次挂所有类成员。
+	Vector<StringName> all;
+	all.reserve(p_plan.get_classes().size());
+	for (const ASBindingClass &c : p_plan.get_classes()) {
+		all.push_back(c.name);
+	}
+	err = register_types(p_plan, all, p_engine);
+	ERR_FAIL_COND_V(err != OK, err);
+
+	return register_globals(p_engine);
 }

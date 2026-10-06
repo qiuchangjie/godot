@@ -1,3 +1,33 @@
+/**************************************************************************/
+/*  as_binding_object.cpp                                                 */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 #include "as_binding_object.h"
 
 #include "as_binding_decl.h"
@@ -5,6 +35,7 @@
 #include "core/object/ref_counted.h"
 #include "core/os/memory.h"
 #include "core/string/string_name.h"
+#include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "core/variant/callable.h"
 
@@ -45,9 +76,12 @@ struct ASUpcastBinding {
 
 // RegisterGlobalProperty 要求存储地址一直有效到引擎销毁，所以用 memnew 泄漏，
 // 不能把 HashMap 里的值取址（rehash 会让地址失效）。
-HashSet<StringName> g_global_names;
+// 注册守卫必须按引擎区分：同一进程内可能同时存在多个 AS 引擎
+// （单元测试、引擎销毁后重建）。用进程级名字集合会让第二个引擎误判「已注册」
+// 而静默跳过，导致引用该名字的 Register* 全部失败并置 configFailed。
+HashMap<asIScriptEngine *, HashSet<StringName>> g_global_names;
 // register_class 幂等：重复挂同一个类的成员会以 asNAME_TAKEN 污染引擎。
-HashSet<StringName> g_registered_classes;
+HashMap<asIScriptEngine *, HashSet<StringName>> g_registered_classes;
 
 void set_exception(const String &p_message) {
 	asIScriptContext *ctx = asGetActiveContext();
@@ -150,10 +184,11 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		// 骨架没建起来（不可见或与值类型同名），成员自然也无从挂载。
 		return ERR_DOES_NOT_EXIST;
 	}
-	if (g_registered_classes.has(p_class.name)) {
+	HashSet<StringName> &registered_classes = g_registered_classes[p_engine];
+	if (registered_classes.has(p_class.name)) {
 		return OK;
 	}
-	g_registered_classes.insert(p_class.name);
+	registered_classes.insert(p_class.name);
 
 	// self 槽语义与 register_skeleton 的 addref/release 选择必须一致：同一判据、同一处推导。
 	const ASBindingKind class_kind = ClassDB::is_parent_class(p_class.name, "RefCounted")
@@ -218,7 +253,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 
 	for (const ASBindingConstant &c : p_class.constants) {
 		const String gname = String(p_class.name) + "_" + c.name;
-		if (g_global_names.has(gname)) {
+		if (g_global_names[p_engine].has(gname)) {
 			continue;
 		}
 		const CharString cgname = gname.utf8();
@@ -233,7 +268,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 			memdelete(storage);
 			continue;
 		}
-		g_global_names.insert(gname);
+		g_global_names[p_engine].insert(gname);
 	}
 
 	// 继承边：AS 不做跨级隐式转换，因此对每个已注册祖先各注册一条 opImplCast。
@@ -266,7 +301,7 @@ Error ASBindingObject::register_enums(const Vector<ASBindingEnum> &p_enums, asIS
 		// ClassDB 只给出裸枚举名（如 "ProcessMode"），不同类会重名；AS 侧一律用
 		// "<声明类>_<枚举名>" 限定，同时把枚举名里可能出现的 '.' 净化成 '_'。
 		const String ename = (String(e.scope) + "_" + String(e.name)).replace(".", "_");
-		if (ename.is_empty() || g_global_names.has(ename)) {
+		if (ename.is_empty() || g_global_names[p_engine].has(ename)) {
 			continue;
 		}
 		const CharString cename = ename.utf8();
@@ -288,7 +323,7 @@ Error ASBindingObject::register_enums(const Vector<ASBindingEnum> &p_enums, asIS
 		if (p_engine->RegisterEnum(cename.get_data()) < 0) {
 			continue;
 		}
-		g_global_names.insert(ename);
+		g_global_names[p_engine].insert(ename);
 		for (const Pair<String, int64_t> &v : kept) {
 			const CharString cval = v.first.utf8();
 			p_engine->RegisterEnumValue(cename.get_data(), cval.get_data(), (int)v.second);
