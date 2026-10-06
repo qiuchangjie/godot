@@ -202,3 +202,17 @@ void as_lazy_compile_module_recovers_missing_type() {
 	CHECK(as->compile_module("lazy_recover", src, &err));
 	CHECK(err.is_empty());
 }
+
+void as_lazy_scan_project_toggle_controls_preheat() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope()); // 空 whitelist：可见集合完整，Sprite2D 在 plan 内。
+
+	asIScriptEngine *engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
+	REQUIRE(engine != nullptr);
+	g_retained_engines.push_back(engine); // 引擎按指针记录注册守卫，保留存活避免地址复用误判。
+
+	Vector<String> sources;
+	sources.push_back("void f() { Sprite2D s; }"); // 阶段 1 应据此预注册 Sprite2D。
+	ASBindingLazyRegistry::get_singleton()->ensure_initialized(plan, engine, sources); // 默认 scan_project=true。
+	CHECK(ASBindingLazyRegistry::get_singleton()->is_registered(StringName("Sprite2D")));
+}

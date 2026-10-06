@@ -36,6 +36,8 @@
 #include "binding/as_binding_lazy.h"
 #include "binding/as_binding_object.h"
 #include "binding/as_binding_registry.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/object/object.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
@@ -148,15 +150,49 @@ void ASEngine::_register_builtins() {
 	ERR_FAIL_COND_MSG(result < 0, vformat("Failed to register the builtin function 'as_log_int' (error %d).", result));
 }
 
+// 递归收集工程 res:// 下的全部 .as 源，供阶段 1 词法扫描。编辑器与导出模板都通过
+// DirAccess 枚举虚拟文件系统（pck 内容同样可枚举），所以两条路径共用这一实现。
+// 跳过隐藏目录（.godot/.git 等）并限制深度，避免符号链接环导致无限递归。
+static void _collect_project_script_sources(const String &p_dir, Vector<String> &r_sources, int p_depth = 0) {
+	const int MAX_SCAN_DEPTH = 16;
+	if (p_depth > MAX_SCAN_DEPTH) {
+		return;
+	}
+	Ref<DirAccess> dir = DirAccess::open(p_dir);
+	if (dir.is_null()) {
+		return;
+	}
+	dir->list_dir_begin();
+	String entry = dir->get_next();
+	while (!entry.is_empty()) {
+		if (entry.begins_with(".")) {
+			entry = dir->get_next();
+			continue;
+		}
+		const String full_path = p_dir.path_join(entry);
+		if (dir->current_is_dir()) {
+			_collect_project_script_sources(full_path, r_sources, p_depth + 1);
+		} else if (entry.get_extension().to_lower() == "as") {
+			Error read_error = OK;
+			const String text = FileAccess::get_file_as_string(full_path, &read_error);
+			if (read_error == OK) {
+				r_sources.push_back(text);
+			}
+		}
+		entry = dir->get_next();
+	}
+	dir->list_dir_end();
+}
+
 void ASEngine::_initialize_binding() {
 	// 计划构建会读取 angel_script/class_whitelist 与 class_blacklist（默认全放行）。
 	binding_plan.build(ASBindingScope::from_project_settings());
 
-	// 阶段 1：core + 工程扫描成员。scan_project 时传入工程全部 .as 源。
-	// 首版留空：阶段 2（编译失败重试）会按需补齐，不影响正确性，只是首次编译可能多一次兜底。
+	// 阶段 1：core + 工程扫描成员。scan_project 打开时把 res:// 下全部 .as 源交给词法扫描，
+	// 命中类在编译前就被按需注册；未命中的漏网之鱼由阶段 2（编译失败重试/全量兜底）补齐。
 	Vector<String> sources;
 	if (ASBindingLazyRegistry::scan_project_enabled()) {
-		// 工程 .as 源枚举见 Task 6；此处为空列表。
+		_collect_project_script_sources("res://", sources);
 	}
 	ASBindingLazyRegistry::get_singleton()->ensure_initialized(binding_plan, engine, sources);
 
