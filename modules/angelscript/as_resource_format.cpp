@@ -50,13 +50,36 @@ Ref<Resource> ASResourceFormatLoaderASScript::load(const String &p_path, const S
 	}
 
 	if (p_path.get_extension().to_lower() == "asb") {
-		// `.asb`（预编译字节码）在阶段一只保留扩展名识别；二进制形态的读写与版本校验属于
-		// 后续里程碑，这里明确拒绝，避免把二进制当 UTF-8 文本读出一堆无意义诊断。
-		ERR_PRINT(vformat("AngelScript bytecode '.asb' is not supported yet: '%s'", p_path));
-		if (r_error) {
-			*r_error = ERR_FILE_UNRECOGNIZED;
+		// `.asb` 容器携带基类与所需类型符号表，交由 ASScript 在加载前做惰性注册。
+		const String script_path = p_original_path.is_empty() ? p_path : p_original_path;
+
+		Error read_error = OK;
+		Vector<uint8_t> bytes = FileAccess::get_file_as_bytes(p_path, &read_error);
+		if (read_error != OK) {
+			ERR_PRINT(vformat("Failed to read AngelScript bytecode '%s'.", p_path));
+			if (r_error) {
+				*r_error = read_error;
+			}
+			return Ref<Resource>();
 		}
-		return Ref<Resource>();
+
+		Ref<ASScript> script;
+		script.instantiate();
+		script->set_path(script_path);
+
+		String error;
+		if (!script->load_bytecode(bytes, script_path, &error)) {
+			ERR_PRINT(vformat("Failed to load AngelScript bytecode '%s': %s", p_path, error));
+			if (r_error) {
+				*r_error = ERR_PARSE_ERROR;
+			}
+			return Ref<Resource>();
+		}
+
+		if (r_error) {
+			*r_error = OK;
+		}
+		return script;
 	}
 
 	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);

@@ -30,6 +30,7 @@
 
 #include "../as_bytecode.h"
 #include "../as_engine.h"
+#include "../as_resource_format.h"
 #include "../as_script.h"
 
 #include "core/io/dir_access.h"
@@ -231,4 +232,30 @@ void as_bytecode_load_rejects_corrupted_payload() {
 	const String after_path = "user://asb_corrupt_after/probe_bytecode.as";
 	after_script->set_path(after_path);
 	CHECK(after_script->compile_source(AS_BYTECODE_TEST_SOURCE, after_path, &error));
+}
+
+void resource_loader_loads_asb() {
+	ASEngine::get_singleton()->ensure_initialized();
+
+	Ref<ASScript> script;
+	script.instantiate();
+	String error;
+	REQUIRE(script->compile_source(AS_BYTECODE_TEST_SOURCE, "user://asb_loader/probe_bytecode.as", &error));
+
+	Vector<StringName> types;
+	types.push_back(StringName("Node"));
+	REQUIRE_EQ(script->save_bytecode("user://asb_loader/probe_bytecode.asb", types, &error), OK);
+
+	// 直接实例化加载器并禁用缓存，验证 `.asb` 分支本身而非 ResourceLoader 的缓存行为。
+	Ref<ASResourceFormatLoaderASScript> loader;
+	loader.instantiate();
+	Error load_error = OK;
+	Ref<Resource> resource = loader->load("user://asb_loader/probe_bytecode.asb", "", &load_error, false, nullptr, ResourceFormatLoader::CACHE_MODE_IGNORE);
+	REQUIRE_EQ(load_error, OK);
+	REQUIRE(resource.is_valid());
+
+	Ref<ASScript> loaded_script = resource;
+	REQUIRE(loaded_script.is_valid());
+	CHECK(loaded_script->is_valid());
+	CHECK_EQ(loaded_script->get_instance_base_type(), StringName("Node"));
 }
