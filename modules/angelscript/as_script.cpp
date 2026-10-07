@@ -30,11 +30,14 @@
 
 #include "as_script.h"
 
+#include "as_bytecode.h"
 #include "as_engine.h"
 #include "as_script_instance.h"
 #include "as_script_language.h"
 #include "binding/as_binding_decl.h"
 
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/object/class_db.h"
 
 static const char *AS_BASE_DIRECTIVE = "// godot_base:";
@@ -184,6 +187,52 @@ bool ASScript::compile_source(const String &p_source, const String &p_path, Stri
 	valid = true;
 	_collect_signals();
 	return true;
+}
+
+Error ASScript::save_bytecode(const String &p_out_path, const Vector<StringName> &p_required_types, String *r_error) {
+	if (!valid) {
+		if (r_error) {
+			*r_error = "Cannot save bytecode for an invalid script.";
+		}
+		return ERR_INVALID_DATA;
+	}
+	asIScriptModule *module = get_module();
+	if (module == nullptr) {
+		if (r_error) {
+			*r_error = "Cannot save bytecode: the script module is not available.";
+		}
+		return ERR_INVALID_DATA;
+	}
+
+	Vector<uint8_t> payload;
+	ASVectorWriteStream stream(payload);
+	// stripDebugInfo 必须为 false，否则信号参数名会丢失。
+	if (module->SaveByteCode(&stream, false) < 0) {
+		if (r_error) {
+			*r_error = "AngelScript failed to serialize the module bytecode.";
+		}
+		return ERR_CANT_CREATE;
+	}
+
+	Vector<uint8_t> packed = as_bytecode_pack(p_required_types, payload);
+
+	String dir = p_out_path.get_base_dir();
+	if (!dir.is_empty() && !DirAccess::dir_exists_absolute(dir)) {
+		DirAccess::make_dir_recursive_absolute(dir);
+	}
+	Error open_error = OK;
+	Ref<FileAccess> file = FileAccess::open(p_out_path, FileAccess::WRITE, &open_error);
+	if (file.is_null()) {
+		if (r_error) {
+			*r_error = vformat("Cannot open '%s' for writing bytecode.", p_out_path);
+		}
+		return open_error == OK ? ERR_CANT_CREATE : open_error;
+	}
+	file->store_buffer(packed);
+	if (r_error) {
+		*r_error = String();
+	}
+	return OK;
 }
 
 asIScriptModule *ASScript::get_module() const {

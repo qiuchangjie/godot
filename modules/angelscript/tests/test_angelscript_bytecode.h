@@ -36,6 +36,7 @@
 
 void as_bytecode_container_roundtrip();
 void as_bytecode_container_rejects_bad_input();
+void as_bytecode_save_writes_container();
 
 #ifndef ANGELSCRIPT_BYTECODE_TESTS_IMPL
 
@@ -44,6 +45,9 @@ TEST_CASE("[AngelScript][ByteCode] container roundtrip") {
 }
 TEST_CASE("[AngelScript][ByteCode] container rejects bad input") {
 	as_bytecode_container_rejects_bad_input();
+}
+TEST_CASE("[AngelScript][ByteCode] save_bytecode writes a loadable container") {
+	as_bytecode_save_writes_container();
 }
 
 #endif // ANGELSCRIPT_BYTECODE_TESTS_IMPL

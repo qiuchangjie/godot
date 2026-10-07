@@ -65,6 +65,9 @@ public:
 	virtual ~ASScript() override;
 
 	bool compile_source(const String &p_source, const String &p_path, String *r_error);
+	// 将已编译模块序列化为 `.asb` 容器并写入 p_out_path。
+	// p_required_types 为加载前需要预注册的 ClassDB 类型集合（由编译工具扫描得到）。
+	Error save_bytecode(const String &p_out_path, const Vector<StringName> &p_required_types, String *r_error = nullptr);
 	asIScriptModule *get_module() const;
 	asITypeInfo *get_type_info() const;
 	void clear();
