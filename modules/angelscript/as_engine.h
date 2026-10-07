@@ -61,11 +61,16 @@ class ASEngine {
 	// 内省 ClassDB 并注册绑定层（值类型 / 对象类型 / 枚举 / @GlobalScope 工具函数）。
 	void _initialize_binding();
 
+	// 递归收集 res:// 下的 .as 源路径（供离线编译工具定位输入文件）。
+	static void _collect_project_script_paths_recursive(const String &p_dir, Vector<String> &r_paths, int p_depth);
+
 	// 编译期消息缓冲：只在 _capture_messages 为真时收集，供阶段 2 提取缺失符号。
 	Vector<String> compile_messages;
 	bool capture_messages = false;
 	// 阶段 2 重试上限：超过即全量兜底（防止无限循环）。
 	static const int MAX_BINDING_RETRIES = 8;
+	// 工程脚本递归扫描深度上限，避免符号链接环导致无限递归。
+	static const int MAX_SCAN_DEPTH = 16;
 
 public:
 	static ASEngine *get_singleton();
@@ -76,6 +81,9 @@ public:
 
 	// 运行期绑定计划（ensure_initialized() 之后有效）。
 	const ASBindingPlan &get_binding_plan() const { return binding_plan; }
+
+	// 收集 res:// 下全部 .as 源文件的路径（保留 res:// 前缀，供编译工具定位输入并推导输出路径）。
+	static void collect_project_script_paths(const String &p_dir, Vector<String> &r_paths);
 
 	// 编译一个独立模块；同名模块会被整体替换。失败时把 AngelScript 诊断写入 r_error。
 	bool compile_module(const String &p_name, const String &p_source, String *r_error);

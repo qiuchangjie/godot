@@ -40,6 +40,7 @@ void as_bytecode_save_writes_container();
 void as_bytecode_load_matches_source_introspection();
 void as_bytecode_load_rejects_corrupted_payload();
 void resource_loader_loads_asb();
+void compile_script_produces_loadable_bytecode();
 
 #ifndef ANGELSCRIPT_BYTECODE_TESTS_IMPL
 
@@ -60,6 +61,9 @@ TEST_CASE("[AngelScript][ByteCode] load_bytecode rejects corrupted payload") {
 }
 TEST_CASE("[AngelScript][ByteCode] resource loader loads .asb") {
 	resource_loader_loads_asb();
+}
+TEST_CASE("[AngelScript][ByteCode] compile helper produces loadable bytecode") {
+	compile_script_produces_loadable_bytecode();
 }
 
 #endif // ANGELSCRIPT_BYTECODE_TESTS_IMPL

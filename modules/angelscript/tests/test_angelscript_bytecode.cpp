@@ -259,3 +259,39 @@ void resource_loader_loads_asb() {
 	CHECK(loaded_script->is_valid());
 	CHECK_EQ(loaded_script->get_instance_base_type(), StringName("Node"));
 }
+
+void compile_script_produces_loadable_bytecode() {
+	ASEngine::get_singleton()->ensure_initialized();
+
+	// 先写一个真实源码文件，模拟工程内 `.as`。
+	DirAccess::make_dir_recursive_absolute("user://asb_compile");
+	{
+		Ref<FileAccess> src = FileAccess::open("user://asb_compile/probe_bytecode.as", FileAccess::WRITE);
+		REQUIRE(src.is_valid());
+		src->store_string(AS_BYTECODE_TEST_SOURCE);
+	}
+
+	String error;
+	REQUIRE_EQ(as_bytecode_compile_script("user://asb_compile/probe_bytecode.as", "user://asb_compile/probe_bytecode.asb", &error), OK);
+
+	Error read_error = OK;
+	Vector<uint8_t> bytes = FileAccess::get_file_as_bytes("user://asb_compile/probe_bytecode.asb", &read_error);
+	REQUIRE_EQ(read_error, OK);
+
+	ASByteCode code;
+	REQUIRE_EQ(as_bytecode_unpack(bytes, code, &error), OK);
+	// 符号表应包含扫描到的类 + 基类。
+	CHECK(code.required_types.size() >= 1);
+	bool has_node = false;
+	for (int i = 0; i < code.required_types.size(); i++) {
+		if (code.required_types[i] == StringName("Node")) {
+			has_node = true;
+		}
+	}
+	CHECK(has_node);
+
+	Ref<ASScript> loaded;
+	loaded.instantiate();
+	REQUIRE(loaded->load_bytecode(bytes, "user://asb_compile_bin/probe_bytecode.as", &error));
+	CHECK(loaded->is_valid());
+}

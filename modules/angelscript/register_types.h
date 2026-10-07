@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/error/error_list.h"
 #include "core/string/ustring.h"
 #include "modules/register_module_types.h"
 
@@ -39,3 +40,7 @@ void uninitialize_angelscript_module(ModuleInitializationLevel p_level);
 // `--dump-angelscript-api <dir>` 的入口：把当前 ClassDB 内省成的绑定计划
 // 转储为 .d.as 声明与未绑定清单（main.cpp 在命令行工具模式下调用）。
 void angelscript_dump_api(const String &p_dir);
+
+// `--compile-angelscript <dir>` 的入口：把工程 res:// 下所有 .as 离线编译成
+// .asb 字节码并写入输出目录（main.cpp 在命令行工具模式下调用）。
+Error angelscript_compile(const String &p_output_dir);

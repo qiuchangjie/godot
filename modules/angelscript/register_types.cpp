@@ -30,6 +30,8 @@
 
 #include "register_types.h"
 
+#include "as_bytecode.h"
+#include "as_engine.h"
 #include "as_resource_format.h"
 #include "as_script_language.h"
 #include "binding/as_binding_dumper.h"
@@ -97,4 +99,30 @@ void angelscript_dump_api(const String &p_dir) {
 		return;
 	}
 	OS::get_singleton()->print("AngelScript API dumped to %s\n", p_dir.utf8().get_data());
+}
+
+Error angelscript_compile(const String &p_output_dir) {
+	// 命令字面量必须匹配源码里的 `// godot_base:` 指令约定；编译前先预热绑定，
+	// 以便 compile_source 能解析基本类型。
+	ASEngine::get_singleton()->ensure_initialized();
+
+	Vector<String> paths;
+	ASEngine::collect_project_script_paths("res://", paths);
+
+	int compiled = 0;
+	int failed = 0;
+	for (int i = 0; i < paths.size(); i++) {
+		const String &source_path = paths[i];
+		String relative = source_path.trim_prefix("res://");
+		String out_path = p_output_dir.path_join(relative.get_basename() + ".asb");
+		String error;
+		if (as_bytecode_compile_script(source_path, out_path, &error) != OK) {
+			failed++;
+			ERR_PRINT(vformat("Failed to compile '%s': %s", source_path, error));
+		} else {
+			compiled++;
+		}
+	}
+	OS::get_singleton()->print("AngelScript compiled %d script(s), %d failed.\n", compiled, failed);
+	return failed == 0 ? OK : FAILED;
 }

@@ -30,6 +30,13 @@
 
 #include "as_bytecode.h"
 
+#include "as_engine.h"
+#include "as_script.h"
+
+#include "binding/as_binding_scanner.h"
+
+#include "core/io/file_access.h"
+
 static const uint8_t AS_BYTECODE_MAGIC[8] = { 'G', 'D', 'A', 'S', 'B', 0, 0, 0 };
 // 容器自检上限，防止畸形文件触发超大分配。
 static const uint32_t AS_BYTECODE_MAX_TYPES = 1 << 16;
@@ -169,4 +176,41 @@ int ASVectorWriteStream::Write(const void *p_ptr, asUINT p_size) {
 		memcpy(buffer.ptrw() + old_size, p_ptr, p_size);
 	}
 	return (int)p_size;
+}
+
+Error as_bytecode_compile_script(const String &p_source_path, const String &p_output_path, String *r_error) {
+	Error read_error = OK;
+	String source = FileAccess::get_file_as_string(p_source_path, &read_error);
+	if (read_error != OK) {
+		if (r_error) {
+			*r_error = vformat("Cannot read AngelScript source '%s'.", p_source_path);
+		}
+		return read_error;
+	}
+
+	Ref<ASScript> script;
+	script.instantiate();
+	script->set_path(p_source_path);
+
+	String compile_error;
+	if (!script->compile_source(source, p_source_path, &compile_error)) {
+		if (r_error) {
+			*r_error = compile_error;
+		}
+		return ERR_PARSE_ERROR;
+	}
+
+	// 扫描器忽略注释与字符串，`// godot_base:` 里的基类不会被扫到，需显式并入。
+	HashSet<StringName> scanned;
+	ASBindingScanner::scan_source(source, scanned);
+	scanned.insert(script->get_instance_base_type());
+
+	Vector<StringName> required_types;
+	required_types.resize(scanned.size());
+	int index = 0;
+	for (const StringName &type : scanned) {
+		required_types.set(index++, type);
+	}
+
+	return script->save_bytecode(p_output_path, required_types, r_error);
 }

@@ -55,6 +55,9 @@ struct ASByteCode {
 Vector<uint8_t> as_bytecode_pack(const StringName &p_base_type, const Vector<StringName> &p_required_types, const Vector<uint8_t> &p_payload);
 Error as_bytecode_unpack(const Vector<uint8_t> &p_bytes, ASByteCode &r_out, String *r_error = nullptr);
 
+// 离线编译单个 `.as` 源文件为 `.asb`：编译 -> 扫描符号 -> 保存容器。
+Error as_bytecode_compile_script(const String &p_source_path, const String &p_output_path, String *r_error = nullptr);
+
 // asIBinaryStream 适配器：AngelScript 只要求 Read/Write 两个方法。
 class ASMemoryReadStream : public asIBinaryStream {
 	const uint8_t *data = nullptr;

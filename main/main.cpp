@@ -299,6 +299,8 @@ static String validate_extension_api_file;
 #ifdef MODULE_ANGELSCRIPT_ENABLED
 static bool dump_angelscript_api = false;
 static String dump_angelscript_api_dir = ".";
+static bool compile_angelscript = false;
+static String compile_angelscript_dir = ".";
 #endif // MODULE_ANGELSCRIPT_ENABLED
 #endif
 bool profile_gpu = false;
@@ -736,6 +738,7 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("", "If incompatibilities or errors are detected, the exit code will be non-zero.\n");
 #ifdef MODULE_ANGELSCRIPT_ENABLED
 	print_help_option("--dump-angelscript-api <path>", "Generate an AngelScript API declaration dump (angelscript_api.d.as and angelscript_unbound.txt) in the given folder, then exit.\n", CLI_OPTION_AVAILABILITY_EDITOR);
+	print_help_option("--compile-angelscript [<output_dir>]", "Compile project AngelScript sources to .asb bytecode in the given folder, then exit.\n", CLI_OPTION_AVAILABILITY_EDITOR);
 #endif // MODULE_ANGELSCRIPT_ENABLED
 	print_help_option("--benchmark", "Benchmark the run time and print it to console.\n", CLI_OPTION_AVAILABILITY_EDITOR);
 	print_help_option("--benchmark-file <path>", "Benchmark the run time and save it to a given file in JSON format. The path should be absolute.\n", CLI_OPTION_AVAILABILITY_EDITOR);
@@ -1699,6 +1702,19 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			// 目录可选，默认当前目录；下一个 token 若还是选项则不吞掉。
 			if (N && !N->get().begins_with("--")) {
 				dump_angelscript_api_dir = N->get();
+				N = N->next();
+			}
+		}
+		else if (arg == "--compile-angelscript") {
+			// 与 --dump-angelscript-api 同样的处理：注册成编辑器实例 + cmdline tool。
+			editor = true;
+			cmdline_tool = true;
+			compile_angelscript = true;
+			main_args.push_back(arg);
+
+			// 输出目录可选，默认当前目录；下一个 token 若还是选项则不吞掉。
+			if (N && !N->get().begins_with("--")) {
+				compile_angelscript_dir = N->get();
 				N = N->next();
 			}
 		}
@@ -4327,6 +4343,10 @@ int Main::start() {
 		if (dump_angelscript_api) {
 			angelscript_dump_api(dump_angelscript_api_dir);
 			return EXIT_SUCCESS;
+		}
+		if (compile_angelscript) {
+			Error compile_error = angelscript_compile(compile_angelscript_dir);
+			return compile_error == OK ? EXIT_SUCCESS : EXIT_FAILURE;
 		}
 #endif // MODULE_ANGELSCRIPT_ENABLED
 

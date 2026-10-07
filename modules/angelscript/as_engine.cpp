@@ -156,11 +156,14 @@ void ASEngine::_register_builtins() {
 	ERR_FAIL_COND_MSG(result < 0, vformat("Failed to register the builtin function 'as_log_int' (error %d).", result));
 }
 
-// 递归收集工程 res:// 下的全部 .as 源，供阶段 1 词法扫描。编辑器与导出模板都通过
+// 收集工程 res:// 下的全部 .as 源路径（相对工程根）。编辑器与导出模板都通过
 // DirAccess 枚举虚拟文件系统（pck 内容同样可枚举），所以两条路径共用这一实现。
 // 跳过隐藏目录（.godot/.git 等）并限制深度，避免符号链接环导致无限递归。
-static void _collect_project_script_sources(const String &p_dir, Vector<String> &r_sources, int p_depth = 0) {
-	const int MAX_SCAN_DEPTH = 16;
+void ASEngine::collect_project_script_paths(const String &p_dir, Vector<String> &r_paths) {
+	_collect_project_script_paths_recursive(p_dir, r_paths, 0);
+}
+
+void ASEngine::_collect_project_script_paths_recursive(const String &p_dir, Vector<String> &r_paths, int p_depth) {
 	if (p_depth > MAX_SCAN_DEPTH) {
 		return;
 	}
@@ -177,13 +180,9 @@ static void _collect_project_script_sources(const String &p_dir, Vector<String> 
 		}
 		const String full_path = p_dir.path_join(entry);
 		if (dir->current_is_dir()) {
-			_collect_project_script_sources(full_path, r_sources, p_depth + 1);
+			_collect_project_script_paths_recursive(full_path, r_paths, p_depth + 1);
 		} else if (entry.get_extension().to_lower() == "as") {
-			Error read_error = OK;
-			const String text = FileAccess::get_file_as_string(full_path, &read_error);
-			if (read_error == OK) {
-				r_sources.push_back(text);
-			}
+			r_paths.push_back(full_path);
 		}
 		entry = dir->get_next();
 	}
@@ -198,7 +197,12 @@ void ASEngine::_initialize_binding() {
 	// 命中类在编译前就被按需注册；未命中的漏网之鱼由阶段 2（编译失败重试/全量兜底）补齐。
 	Vector<String> sources;
 	if (ASBindingLazyRegistry::scan_project_enabled()) {
-		_collect_project_script_sources("res://", sources);
+		Vector<String> project_paths;
+		collect_project_script_paths("res://", project_paths);
+		sources.resize(project_paths.size());
+		for (int i = 0; i < project_paths.size(); i++) {
+			sources.set(i, FileAccess::get_file_as_string(project_paths[i]));
+		}
 	}
 	ASBindingLazyRegistry::get_singleton()->ensure_initialized(binding_plan, engine, sources);
 
