@@ -37,6 +37,8 @@
 void as_bytecode_container_roundtrip();
 void as_bytecode_container_rejects_bad_input();
 void as_bytecode_save_writes_container();
+void as_bytecode_load_matches_source_introspection();
+void as_bytecode_load_rejects_corrupted_payload();
 
 #ifndef ANGELSCRIPT_BYTECODE_TESTS_IMPL
 
@@ -48,6 +50,12 @@ TEST_CASE("[AngelScript][ByteCode] container rejects bad input") {
 }
 TEST_CASE("[AngelScript][ByteCode] save_bytecode writes a loadable container") {
 	as_bytecode_save_writes_container();
+}
+TEST_CASE("[AngelScript][ByteCode] load_bytecode matches source introspection") {
+	as_bytecode_load_matches_source_introspection();
+}
+TEST_CASE("[AngelScript][ByteCode] load_bytecode rejects corrupted payload") {
+	as_bytecode_load_rejects_corrupted_payload();
 }
 
 #endif // ANGELSCRIPT_BYTECODE_TESTS_IMPL

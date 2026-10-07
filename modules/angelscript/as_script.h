@@ -68,6 +68,9 @@ public:
 	// 将已编译模块序列化为 `.asb` 容器并写入 p_out_path。
 	// p_required_types 为加载前需要预注册的 ClassDB 类型集合（由编译工具扫描得到）。
 	Error save_bytecode(const String &p_out_path, const Vector<StringName> &p_required_types, String *r_error = nullptr);
+	// 从 `.asb` 容器字节加载脚本：先按容器符号表增量注册 ClassDB 类型，再反序列化模块。
+	// 基类由模块类型信息推导；失败时清空自身，不留下半成品脚本。
+	bool load_bytecode(const Vector<uint8_t> &p_bytes, const String &p_path, String *r_error = nullptr);
 	asIScriptModule *get_module() const;
 	asITypeInfo *get_type_info() const;
 	void clear();

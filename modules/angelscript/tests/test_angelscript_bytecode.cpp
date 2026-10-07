@@ -49,7 +49,7 @@ void as_bytecode_container_roundtrip() {
 	payload.push_back(0xBE);
 	payload.push_back(0xEF);
 
-	Vector<uint8_t> packed = as_bytecode_pack(types, payload);
+	Vector<uint8_t> packed = as_bytecode_pack(StringName("Node"), types, payload);
 	REQUIRE(packed.size() > 16);
 	CHECK_EQ(packed[0], 0x47); // 'G'
 	CHECK_EQ(packed[1], 0x44); // 'D'
@@ -61,6 +61,7 @@ void as_bytecode_container_roundtrip() {
 	String err;
 	REQUIRE_EQ(as_bytecode_unpack(packed, out, &err), OK);
 	CHECK_EQ(out.format_version, AS_BYTECODE_FORMAT_VERSION);
+	CHECK(out.base_type == StringName("Node"));
 	REQUIRE_EQ(out.required_types.size(), 2);
 	CHECK(out.required_types[0] == StringName("Node"));
 	CHECK(out.required_types[1] == StringName("Timer"));
@@ -74,7 +75,7 @@ void as_bytecode_container_rejects_bad_input() {
 	types.push_back(StringName("Node"));
 	Vector<uint8_t> payload;
 	payload.push_back(0x01);
-	Vector<uint8_t> good = as_bytecode_pack(types, payload);
+	Vector<uint8_t> good = as_bytecode_pack(StringName("Node"), types, payload);
 
 	ASByteCode out;
 	String err;
@@ -125,7 +126,109 @@ void as_bytecode_save_writes_container() {
 
 	ASByteCode code;
 	REQUIRE_EQ(as_bytecode_unpack(bytes, code, &error), OK);
+	CHECK(code.base_type == StringName("Node"));
 	REQUIRE_EQ(code.required_types.size(), 1);
 	CHECK(code.required_types[0] == StringName("Node"));
 	CHECK(code.payload.size() > 0);
+}
+
+void as_bytecode_load_matches_source_introspection() {
+	ASEngine::get_singleton()->ensure_initialized();
+
+	const String source_path = "user://asb_pair_src/probe_bytecode.as";
+	Ref<ASScript> source_script;
+	source_script.instantiate();
+	source_script->set_path(source_path);
+	String error;
+	REQUIRE(source_script->compile_source(AS_BYTECODE_TEST_SOURCE, source_path, &error));
+
+	Vector<StringName> types;
+	types.push_back(StringName("Node"));
+	REQUIRE_EQ(source_script->save_bytecode("user://asb_pair_src/probe_bytecode.asb", types, &error), OK);
+
+	Error read_error = OK;
+	Vector<uint8_t> bytes = FileAccess::get_file_as_bytes("user://asb_pair_src/probe_bytecode.asb", &read_error);
+	REQUIRE_EQ(read_error, OK);
+
+	// 字节码脚本的类名必须等于文件名，故与源码脚本使用相同的 basename。
+	Ref<ASScript> binary_script;
+	binary_script.instantiate();
+	CAPTURE(error);
+	REQUIRE(binary_script->load_bytecode(bytes, "user://asb_pair_bin/probe_bytecode.as", &error));
+
+	CHECK(binary_script->is_valid());
+	CHECK_EQ(binary_script->get_instance_base_type(), StringName("Node"));
+	CHECK(binary_script->has_method(StringName("_ready")));
+	CHECK(binary_script->has_method(StringName("add")));
+	CHECK_FALSE(binary_script->has_method(StringName("signal_ping"))); // signal_ 前缀方法不计入普通方法表。
+
+	// 方法/属性内省在源码态与字节码态必须逐项一致（数量与内容均来自 asITypeInfo）。
+	List<MethodInfo> source_methods;
+	source_script->get_script_method_list(&source_methods);
+	List<MethodInfo> binary_methods;
+	binary_script->get_script_method_list(&binary_methods);
+	CHECK_EQ(source_methods.size(), binary_methods.size());
+
+	List<PropertyInfo> source_props;
+	source_script->get_script_property_list(&source_props);
+	List<PropertyInfo> binary_props;
+	binary_script->get_script_property_list(&binary_props);
+	CHECK_EQ(source_props.size(), binary_props.size());
+
+	// 信号及参数名依赖保存时的调试信息（stripDebugInfo=false）。
+	CHECK(source_script->has_script_signal(StringName("ping")));
+	CHECK(binary_script->has_script_signal(StringName("ping")));
+
+	List<MethodInfo> binary_signals;
+	binary_script->get_script_signal_list(&binary_signals);
+	bool found_ping = false;
+	for (List<MethodInfo>::Element *E = binary_signals.front(); E; E = E->next()) {
+		const MethodInfo &mi = E->get();
+		if (mi.name != StringName("ping")) {
+			continue;
+		}
+		found_ping = true;
+		REQUIRE_EQ(mi.arguments.size(), 2);
+		CHECK_EQ(mi.arguments[0].name, StringName("value"));
+		CHECK_EQ(mi.arguments[1].name, StringName("label"));
+	}
+	CHECK(found_ping);
+}
+
+void as_bytecode_load_rejects_corrupted_payload() {
+	ASEngine::get_singleton()->ensure_initialized();
+
+	const String source_path = "user://asb_corrupt_src/probe_bytecode.as";
+	Ref<ASScript> source_script;
+	source_script.instantiate();
+	source_script->set_path(source_path);
+	String error;
+	REQUIRE(source_script->compile_source(AS_BYTECODE_TEST_SOURCE, source_path, &error));
+
+	Vector<StringName> types;
+	types.push_back(StringName("Node"));
+	REQUIRE_EQ(source_script->save_bytecode("user://asb_corrupt_src/probe_bytecode.asb", types, &error), OK);
+
+	Error read_error = OK;
+	Vector<uint8_t> bytes = FileAccess::get_file_as_bytes("user://asb_corrupt_src/probe_bytecode.asb", &read_error);
+	REQUIRE_EQ(read_error, OK);
+
+	ASByteCode code;
+	REQUIRE_EQ(as_bytecode_unpack(bytes, code, &error), OK);
+	// 保留合法的容器头与符号表，只把 payload 截断到 4 字节，加载必然失败。
+	Vector<uint8_t> corrupted = bytes.slice(0, bytes.size() - code.payload.size() + 4);
+
+	Ref<ASScript> binary_script;
+	binary_script.instantiate();
+	String load_error;
+	CHECK_FALSE(binary_script->load_bytecode(corrupted, "user://asb_corrupt_bin/probe_bytecode.as", &load_error));
+	CHECK_FALSE(load_error.is_empty());
+	CHECK_FALSE(binary_script->is_valid());
+
+	// 失败后不得污染引擎：仍能正常编译源码脚本（另用不同路径，避免与 source_script 争用资源缓存）。
+	Ref<ASScript> after_script;
+	after_script.instantiate();
+	const String after_path = "user://asb_corrupt_after/probe_bytecode.as";
+	after_script->set_path(after_path);
+	CHECK(after_script->compile_source(AS_BYTECODE_TEST_SOURCE, after_path, &error));
 }

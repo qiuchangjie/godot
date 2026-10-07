@@ -46,11 +46,16 @@ static uint32_t _read_u32_le(const uint8_t *p) {
 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-Vector<uint8_t> as_bytecode_pack(const Vector<StringName> &p_required_types, const Vector<uint8_t> &p_payload) {
+Vector<uint8_t> as_bytecode_pack(const StringName &p_base_type, const Vector<StringName> &p_required_types, const Vector<uint8_t> &p_payload) {
 	Vector<uint8_t> out;
 	out.resize(8);
 	memcpy(out.ptrw(), AS_BYTECODE_MAGIC, 8);
 	_append_u32_le(out, AS_BYTECODE_FORMAT_VERSION);
+	CharString base_utf8 = String(p_base_type).utf8();
+	_append_u32_le(out, (uint32_t)base_utf8.length());
+	for (int j = 0; j < base_utf8.length(); j++) {
+		out.push_back((uint8_t)base_utf8[j]);
+	}
 	_append_u32_le(out, (uint32_t)p_required_types.size());
 	for (int i = 0; i < p_required_types.size(); i++) {
 		CharString utf8 = String(p_required_types[i]).utf8();
@@ -85,14 +90,27 @@ Error as_bytecode_unpack(const Vector<uint8_t> &p_bytes, ASByteCode &r_out, Stri
 	if (version != AS_BYTECODE_FORMAT_VERSION) {
 		return fail("AngelScript bytecode container uses an unsupported format version.");
 	}
-	uint32_t count = _read_u32_le(data + 12);
+
+	int offset = 12;
+	uint32_t base_len = _read_u32_le(data + offset);
+	offset += 4;
+	if (base_len > AS_BYTECODE_MAX_TYPE_NAME || offset + (int)base_len > size) {
+		return fail("AngelScript bytecode container is truncated in the base type name.");
+	}
+	String base_name = String::utf8((const char *)data + offset, (int)base_len);
+	offset += (int)base_len;
+
+	if (offset + 4 > size) {
+		return fail("AngelScript bytecode container is truncated in the type count.");
+	}
+	uint32_t count = _read_u32_le(data + offset);
+	offset += 4;
 	if (count > AS_BYTECODE_MAX_TYPES) {
 		return fail("AngelScript bytecode container declares too many required types.");
 	}
 
 	Vector<StringName> types;
 	types.resize(count);
-	int offset = 16;
 	for (uint32_t i = 0; i < count; i++) {
 		if (offset + 4 > size) {
 			return fail("AngelScript bytecode container is truncated in a type length.");
@@ -111,6 +129,7 @@ Error as_bytecode_unpack(const Vector<uint8_t> &p_bytes, ASByteCode &r_out, Stri
 	}
 
 	r_out.format_version = version;
+	r_out.base_type = StringName(base_name);
 	r_out.required_types = types;
 	r_out.payload = p_bytes.slice(offset, size);
 	if (r_error) {

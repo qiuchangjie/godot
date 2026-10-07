@@ -35,6 +35,8 @@
 #include "as_script_instance.h"
 #include "as_script_language.h"
 #include "binding/as_binding_decl.h"
+#include "binding/as_binding_lazy.h"
+#include "binding/as_binding_plan.h"
 
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -214,7 +216,7 @@ Error ASScript::save_bytecode(const String &p_out_path, const Vector<StringName>
 		return ERR_CANT_CREATE;
 	}
 
-	Vector<uint8_t> packed = as_bytecode_pack(p_required_types, payload);
+	Vector<uint8_t> packed = as_bytecode_pack(instance_base_type, p_required_types, payload);
 
 	String dir = p_out_path.get_base_dir();
 	if (!dir.is_empty() && !DirAccess::dir_exists_absolute(dir)) {
@@ -233,6 +235,98 @@ Error ASScript::save_bytecode(const String &p_out_path, const Vector<StringName>
 		*r_error = String();
 	}
 	return OK;
+}
+
+bool ASScript::load_bytecode(const Vector<uint8_t> &p_bytes, const String &p_path, String *r_error) {
+	clear();
+	if (p_path.is_empty()) {
+		if (r_error) {
+			*r_error = "Cannot load bytecode without a resource path.";
+		}
+		return false;
+	}
+	const String expected_class = get_class_name_for_path(p_path);
+
+	ASEngine::get_singleton()->ensure_initialized();
+	asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
+	if (engine == nullptr) {
+		if (r_error) {
+			*r_error = "Cannot load bytecode: the AngelScript engine is not available.";
+		}
+		return false;
+	}
+
+	ASByteCode bytecode;
+	String unpack_error;
+	if (as_bytecode_unpack(p_bytes, bytecode, &unpack_error) != OK) {
+		if (r_error) {
+			*r_error = unpack_error;
+		}
+		return false;
+	}
+
+	// 容器携带符号表：加载前先把字节码引用的 ClassDB 类型（含基类）增量注册，避免退回全量注册。
+	Vector<StringName> register_types = bytecode.required_types;
+	if (!bytecode.base_type.is_empty() && !register_types.has(bytecode.base_type)) {
+		register_types.push_back(bytecode.base_type);
+	}
+	ASBindingLazyRegistry::get_singleton()->ensure_registered(
+			ASEngine::get_singleton()->get_binding_plan(), register_types, engine);
+
+	module_name = p_path;
+	asIScriptModule *module = engine->GetModule(module_name.utf8().get_data(), asGM_ALWAYS_CREATE);
+	if (module == nullptr) {
+		clear();
+		if (r_error) {
+			*r_error = "AngelScript failed to create a module for bytecode.";
+		}
+		return false;
+	}
+
+	ASMemoryReadStream stream(bytecode.payload.ptr(), (uint32_t)bytecode.payload.size());
+	bool was_debug_info_stripped = false;
+	if (module->LoadByteCode(&stream, &was_debug_info_stripped) < 0) {
+		clear();
+		if (r_error) {
+			*r_error = "Unable to load AngelScript bytecode (missing symbols or corrupted payload).";
+		}
+		return false;
+	}
+
+	asITypeInfo *type = _find_script_class(module, expected_class);
+	if (type == nullptr) {
+		clear();
+		if (r_error) {
+			*r_error = vformat("Bytecode file name and script class name must match (expected '%s').", expected_class);
+		}
+		return false;
+	}
+
+	// AS 脚本类不携带 `// godot_base:` 继承信息，基类由容器随字节码携带。
+	if (bytecode.base_type.is_empty()) {
+		clear();
+		if (r_error) {
+			*r_error = "Loaded bytecode is missing its base type.";
+		}
+		return false;
+	}
+	const String base_name = String(bytecode.base_type);
+	if (!ClassDB::class_exists(bytecode.base_type)) {
+		clear();
+		if (r_error) {
+			*r_error = vformat("Loaded bytecode base class '%s' is not a known ClassDB type.", base_name);
+		}
+		return false;
+	}
+
+	class_name = expected_class;
+	instance_base_type = bytecode.base_type;
+	valid = true;
+	_collect_signals();
+	if (r_error) {
+		*r_error = String();
+	}
+	return true;
 }
 
 asIScriptModule *ASScript::get_module() const {

@@ -45,11 +45,14 @@ constexpr uint32_t AS_BYTECODE_FORMAT_VERSION = 1;
 
 struct ASByteCode {
 	uint32_t format_version = 0;
+	// AS 脚本类不携带 `// godot_base:` 继承信息（基类只存在于源码注释里），
+	// 因此字节码必须随容器携带基类名。
+	StringName base_type;
 	Vector<StringName> required_types;
 	Vector<uint8_t> payload;
 };
 
-Vector<uint8_t> as_bytecode_pack(const Vector<StringName> &p_required_types, const Vector<uint8_t> &p_payload);
+Vector<uint8_t> as_bytecode_pack(const StringName &p_base_type, const Vector<StringName> &p_required_types, const Vector<uint8_t> &p_payload);
 Error as_bytecode_unpack(const Vector<uint8_t> &p_bytes, ASByteCode &r_out, String *r_error = nullptr);
 
 // asIBinaryStream 适配器：AngelScript 只要求 Read/Write 两个方法。
