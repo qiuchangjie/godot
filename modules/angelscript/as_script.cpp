@@ -230,7 +230,19 @@ Error ASScript::save_bytecode(const String &p_out_path, const Vector<StringName>
 		}
 		return open_error == OK ? ERR_CANT_CREATE : open_error;
 	}
-	file->store_buffer(packed);
+	if (!file->store_buffer(packed) || file->get_error() != OK) {
+		if (r_error) {
+			*r_error = vformat("Cannot write bytecode to '%s'.", p_out_path);
+		}
+		return ERR_FILE_CANT_WRITE;
+	}
+	file->flush();
+	if (file->get_error() != OK) {
+		if (r_error) {
+			*r_error = vformat("Cannot flush bytecode to '%s'.", p_out_path);
+		}
+		return ERR_FILE_CANT_WRITE;
+	}
 	if (r_error) {
 		*r_error = String();
 	}
@@ -266,6 +278,9 @@ bool ASScript::load_bytecode(const Vector<uint8_t> &p_bytes, const String &p_pat
 	}
 
 	// 容器携带符号表：加载前先把字节码引用的 ClassDB 类型（含基类）增量注册，避免退回全量注册。
+	// 严禁在此处退回 register_all 做兜底：那会让懒启动（惰性注册）秒级启动的收益全部作废。
+	// 符号表缺失/类型未注册时的正确行为是让 LoadByteCode 失败并向上报错，由业务层负责
+	// 重新下发匹配 ABI 的 `.asb`（ABI/签名/回退策略归业务层 manifest，见 M4 spec §6.4）。
 	Vector<StringName> register_types = bytecode.required_types;
 	if (!bytecode.base_type.is_empty() && !register_types.has(bytecode.base_type)) {
 		register_types.push_back(bytecode.base_type);

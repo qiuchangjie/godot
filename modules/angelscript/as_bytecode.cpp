@@ -149,24 +149,28 @@ ASMemoryReadStream::ASMemoryReadStream(const uint8_t *p_data, uint32_t p_size) :
 		data(p_data), size(p_size) {}
 
 int ASMemoryReadStream::Read(void *ptr, asUINT p_size) {
-	asUINT remaining = size - pos;
-	asUINT to_read = p_size < remaining ? p_size : remaining;
-	if (to_read > 0) {
-		memcpy(ptr, data + pos, to_read);
-		pos += to_read;
+	// AngelScript 的 asCReader::ReadData 只把**负**返回当 EOF；返回 0 会被当成
+	// 「成功读到 0 字节」，从而把未初始化的目标内存喂给反序列化器（UB）。
+	if (p_size == 0) {
+		return 0;
 	}
-	return (int)to_read;
+	if (pos > size || p_size > size - pos) {
+		return -1;
+	}
+	memcpy(ptr, data + pos, p_size);
+	pos += p_size;
+	return (int)p_size;
 }
 
 int ASMemoryReadStream::Write(const void *p_ptr, asUINT p_size) {
-	return 0;
+	return -1;
 }
 
 ASVectorWriteStream::ASVectorWriteStream(Vector<uint8_t> &p_buffer) :
 		buffer(p_buffer) {}
 
 int ASVectorWriteStream::Read(void *p_ptr, asUINT p_size) {
-	return 0;
+	return -1;
 }
 
 int ASVectorWriteStream::Write(const void *p_ptr, asUINT p_size) {

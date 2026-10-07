@@ -28,8 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#ifndef AS_BYTECODE_H
-#define AS_BYTECODE_H
+#pragma once
 
 #include "core/string/string_name.h"
 #include "core/string/ustring.h"
@@ -78,5 +77,3 @@ public:
 	int Read(void *ptr, asUINT size) override;
 	int Write(const void *ptr, asUINT size) override;
 };
-
-#endif // AS_BYTECODE_H

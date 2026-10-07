@@ -18,12 +18,13 @@
   - `@GlobalScope` 工具函数：签名可表达的工具函数（如 `clampf`）注册为全局函数。
   - 可见性：`angel_script/class_whitelist` / `angel_script/class_blacklist` 项目设置控制绑定范围（空白名单 = 全部放行，`Object` 无条件保留，白名单会回填祖先链）。
   - `--dump-angelscript-api <dir>`：把当前绑定面导出为 `angelscript_api.d.as`（声明，首行为内容哈希）与 `angelscript_unbound.txt`（不可绑定清单）。
+  - `--compile-angelscript [<output_dir>]`：扫描 `res://` 下的 `.as` 源文件，逐个离线编译为 `.asb` 字节码容器（默认输出到当前目录）。
 
-尚未提供（后续里程碑）：跨语言通道的对象/字符串回调编组（`_input` 等带参回调仍不派发）、协程（await）、编辑器语言服务与断点调试（`validate()` / `find_function()` / `make_function()` 等暂为 stub）、`.asb` 预编译产物的生成工具、脚本内自定义类注册进 ClassDB。
+尚未提供（后续里程碑）：跨语言通道的对象/字符串回调编组（`_input` 等带参回调仍不派发）、协程（await）、编辑器语言服务与断点调试（`validate()` / `find_function()` / `make_function()` 等暂为 stub）、脚本内自定义类注册进 ClassDB。
 
 ## 脚本约定
 
-- 扩展名：`.as` 为唯一可加载形态；`.asb`（预编译字节码）阶段一只保留扩展名识别，加载器会明确拒绝（二进制读写与版本校验属后续里程碑）。
+- 扩展名：`.as`（源码）与 `.asb`（预编译字节码容器，M4）均可加载。`.asb` 由 `--compile-angelscript` 离线生成：容器携带基类名与所需的 ClassDB 类型符号表，加载前只对这些类型做增量注册（不退回全量注册）；字节码脚本没有 `source_code`，`reload()` 返回 `ERR_INVALID_DATA`，类名同样必须等于文件名，且 `.asb` 必须与生成它的引擎 ABI 一致（版本/签名校验与回退策略由业务层 manifest 负责，本模块不做校验）。
 - 加载线程：`.as` 必须在主线程加载（AS 引擎主线程独占，见 `as_engine.h`）；`ResourceLoader.load_threaded_request()` 会失败并打印错误，而不是在后台线程破坏引擎状态。
 - 基类指令：源码前 10 行内必须有一行 `// godot_base: <ClassDB 类型名>`，它决定 `ASScript::get_instance_base_type()`（如 `Node`、`Resource`）。缺少或类型不存在都会导致加载失败。
 - 类名必须等于文件名（不含扩展名），例如 `res://enemy_spawner.as` 里的类必须叫 `enemy_spawner`。本模块不做全局类名注册，脚本一律按路径引用。

@@ -1704,8 +1704,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 				dump_angelscript_api_dir = N->get();
 				N = N->next();
 			}
-		}
-		else if (arg == "--compile-angelscript") {
+		} else if (arg == "--compile-angelscript") {
 			// 与 --dump-angelscript-api 同样的处理：注册成编辑器实例 + cmdline tool。
 			editor = true;
 			cmdline_tool = true;

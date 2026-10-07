@@ -36,6 +36,7 @@
 
 void as_bytecode_container_roundtrip();
 void as_bytecode_container_rejects_bad_input();
+void as_bytecode_stream_read_stops_at_end();
 void as_bytecode_save_writes_container();
 void as_bytecode_load_matches_source_introspection();
 void as_bytecode_load_rejects_corrupted_payload();
@@ -49,6 +50,9 @@ TEST_CASE("[AngelScript][ByteCode] container roundtrip") {
 }
 TEST_CASE("[AngelScript][ByteCode] container rejects bad input") {
 	as_bytecode_container_rejects_bad_input();
+}
+TEST_CASE("[AngelScript][ByteCode] memory read stream stops at end") {
+	as_bytecode_stream_read_stops_at_end();
 }
 TEST_CASE("[AngelScript][ByteCode] save_bytecode writes a loadable container") {
 	as_bytecode_save_writes_container();

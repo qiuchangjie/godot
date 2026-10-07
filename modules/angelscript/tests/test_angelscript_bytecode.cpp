@@ -98,6 +98,25 @@ void as_bytecode_container_rejects_bad_input() {
 	CHECK_EQ(as_bytecode_unpack(tiny, out, &err), ERR_INVALID_DATA);
 }
 
+void as_bytecode_stream_read_stops_at_end() {
+	const uint8_t data[3] = { 0xAA, 0xBB, 0xCC };
+	ASMemoryReadStream stream(data, 3);
+
+	uint8_t buf[4] = { 0 };
+	REQUIRE_EQ(stream.Read(buf, 3), 3);
+	CHECK_EQ(buf[0], 0xAA);
+	CHECK_EQ(buf[1], 0xBB);
+	CHECK_EQ(buf[2], 0xCC);
+
+	// 读尽后任意读取必须返回负数：asCReader::ReadData 只把负返回当 EOF，
+	// 返回 0 会被当作「成功读到 0 字节」而留下未初始化目标内存。
+	CHECK(stream.Read(buf, 1) < 0);
+	CHECK(stream.Read(buf, 4) < 0);
+	// 零长度读不算越界，也不推进游标。
+	CHECK_EQ(stream.Read(buf, 0), 0);
+	CHECK(stream.Read(buf, 1) < 0);
+}
+
 // 信号在绑定层以 `signal_<name>` 方法约定表示（无 `signal` 关键字），故此处用方法声明。
 static const char *AS_BYTECODE_TEST_SOURCE =
 		"// godot_base: Node\n"
@@ -133,6 +152,41 @@ void as_bytecode_save_writes_container() {
 	CHECK(code.payload.size() > 0);
 }
 
+static Vector<MethodInfo> _methods_sorted_by_name(const List<MethodInfo> &p_in) {
+	Vector<MethodInfo> out;
+	for (const MethodInfo &mi : p_in) {
+		out.push_back(mi);
+	}
+	// 简单插入排序：内省顺序无保证，需按名字归一后逐项比较。
+	for (int i = 1; i < out.size(); i++) {
+		MethodInfo key = out[i];
+		int j = i - 1;
+		while (j >= 0 && out[j].name > key.name) {
+			out.set(j + 1, out[j]);
+			j--;
+		}
+		out.set(j + 1, key);
+	}
+	return out;
+}
+
+static Vector<PropertyInfo> _properties_sorted_by_name(const List<PropertyInfo> &p_in) {
+	Vector<PropertyInfo> out;
+	for (const PropertyInfo &pi : p_in) {
+		out.push_back(pi);
+	}
+	for (int i = 1; i < out.size(); i++) {
+		PropertyInfo key = out[i];
+		int j = i - 1;
+		while (j >= 0 && out[j].name > key.name) {
+			out.set(j + 1, out[j]);
+			j--;
+		}
+		out.set(j + 1, key);
+	}
+	return out;
+}
+
 void as_bytecode_load_matches_source_introspection() {
 	ASEngine::get_singleton()->ensure_initialized();
 
@@ -164,17 +218,34 @@ void as_bytecode_load_matches_source_introspection() {
 	CHECK_FALSE(binary_script->has_method(StringName("signal_ping"))); // signal_ 前缀方法不计入普通方法表。
 
 	// 方法/属性内省在源码态与字节码态必须逐项一致（数量与内容均来自 asITypeInfo）。
-	List<MethodInfo> source_methods;
-	source_script->get_script_method_list(&source_methods);
-	List<MethodInfo> binary_methods;
-	binary_script->get_script_method_list(&binary_methods);
-	CHECK_EQ(source_methods.size(), binary_methods.size());
+	List<MethodInfo> source_methods_list;
+	source_script->get_script_method_list(&source_methods_list);
+	List<MethodInfo> binary_methods_list;
+	binary_script->get_script_method_list(&binary_methods_list);
+	Vector<MethodInfo> source_methods = _methods_sorted_by_name(source_methods_list);
+	Vector<MethodInfo> binary_methods = _methods_sorted_by_name(binary_methods_list);
+	REQUIRE_EQ(source_methods.size(), binary_methods.size());
+	for (int i = 0; i < source_methods.size(); i++) {
+		CHECK_EQ(source_methods[i].name, binary_methods[i].name);
+		CHECK_EQ(source_methods[i].return_val.type, binary_methods[i].return_val.type);
+		REQUIRE_EQ(source_methods[i].arguments.size(), binary_methods[i].arguments.size());
+		for (int j = 0; j < source_methods[i].arguments.size(); j++) {
+			CHECK_EQ(source_methods[i].arguments[j].name, binary_methods[i].arguments[j].name);
+			CHECK_EQ(source_methods[i].arguments[j].type, binary_methods[i].arguments[j].type);
+		}
+	}
 
-	List<PropertyInfo> source_props;
-	source_script->get_script_property_list(&source_props);
-	List<PropertyInfo> binary_props;
-	binary_script->get_script_property_list(&binary_props);
-	CHECK_EQ(source_props.size(), binary_props.size());
+	List<PropertyInfo> source_props_list;
+	source_script->get_script_property_list(&source_props_list);
+	List<PropertyInfo> binary_props_list;
+	binary_script->get_script_property_list(&binary_props_list);
+	Vector<PropertyInfo> source_props = _properties_sorted_by_name(source_props_list);
+	Vector<PropertyInfo> binary_props = _properties_sorted_by_name(binary_props_list);
+	REQUIRE_EQ(source_props.size(), binary_props.size());
+	for (int i = 0; i < source_props.size(); i++) {
+		CHECK_EQ(source_props[i].name, binary_props[i].name);
+		CHECK_EQ(source_props[i].type, binary_props[i].type);
+	}
 
 	// 信号及参数名依赖保存时的调试信息（stripDebugInfo=false）。
 	CHECK(source_script->has_script_signal(StringName("ping")));
@@ -216,15 +287,25 @@ void as_bytecode_load_rejects_corrupted_payload() {
 
 	ASByteCode code;
 	REQUIRE_EQ(as_bytecode_unpack(bytes, code, &error), OK);
-	// 保留合法的容器头与符号表，只把 payload 截断到 4 字节，加载必然失败。
-	Vector<uint8_t> corrupted = bytes.slice(0, bytes.size() - code.payload.size() + 4);
+	const int payload_start = bytes.size() - code.payload.size();
 
-	Ref<ASScript> binary_script;
-	binary_script.instantiate();
-	String load_error;
-	CHECK_FALSE(binary_script->load_bytecode(corrupted, "user://asb_corrupt_bin/probe_bytecode.as", &load_error));
-	CHECK_FALSE(load_error.is_empty());
-	CHECK_FALSE(binary_script->is_valid());
+	// 保留合法的容器头与符号表，把 payload 截断到不同偏移，加载都必须失败
+	// （越界读取必须报 EOF，而不是把未初始化内存喂给反序列化器）。
+	const float ratios[4] = { 0.0f, 0.1f, 0.5f, 0.9f };
+	for (int i = 0; i < 4; i++) {
+		int keep_payload = (int)((float)code.payload.size() * ratios[i]);
+		if (keep_payload < 1) {
+			keep_payload = 1;
+		}
+		Vector<uint8_t> corrupted = bytes.slice(0, payload_start + keep_payload);
+
+		Ref<ASScript> binary_script;
+		binary_script.instantiate();
+		String load_error;
+		CHECK_FALSE(binary_script->load_bytecode(corrupted, vformat("user://asb_corrupt_bin/probe_bytecode_%d.as", i), &load_error));
+		CHECK_FALSE(load_error.is_empty());
+		CHECK_FALSE(binary_script->is_valid());
+	}
 
 	// 失败后不得污染引擎：仍能正常编译源码脚本（另用不同路径，避免与 source_script 争用资源缓存）。
 	Ref<ASScript> after_script;
