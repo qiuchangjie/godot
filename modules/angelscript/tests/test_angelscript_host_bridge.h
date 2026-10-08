@@ -36,6 +36,9 @@
 void as_host_bridge_install_validation();
 void as_host_bridge_invoke_dispatch();
 void as_host_bridge_stale_object_is_safe();
+void as_host_call_scalar_roundtrip();
+void as_host_call_string_and_container_roundtrip();
+void as_host_call_without_table_reports_error();
 
 #ifndef ANGELSCRIPT_HOST_BRIDGE_TESTS_IMPL
 
@@ -49,6 +52,18 @@ TEST_CASE("[AngelScript][HostBridge] invoke dispatches to the installed table") 
 
 TEST_CASE("[AngelScript][HostBridge] stale object argument is passed safely") {
 	as_host_bridge_stale_object_is_safe();
+}
+
+TEST_CASE("[AngelScript][HostBridge] as_host_call scalar roundtrip") {
+	as_host_call_scalar_roundtrip();
+}
+
+TEST_CASE("[AngelScript][HostBridge] as_host_call string and container roundtrip") {
+	as_host_call_string_and_container_roundtrip();
+}
+
+TEST_CASE("[AngelScript][HostBridge] as_host_call without a table reports an error") {
+	as_host_call_without_table_reports_error();
 }
 
 #endif // ANGELSCRIPT_HOST_BRIDGE_TESTS_IMPL

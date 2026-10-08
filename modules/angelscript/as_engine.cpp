@@ -30,6 +30,7 @@
 
 #include "as_engine.h"
 
+#include "as_host_bridge.h"
 #include "as_script_instance.h"
 #include "binding/as_binding_decl.h"
 #include "binding/as_binding_error_mapper.h"
@@ -127,6 +128,35 @@ static void _as_callable(asIScriptGeneric *p_generic) {
 	as_binding_marshal_return(p_generic, AS_KIND_VALUE, ret);
 }
 
+// M5 互操作 L2：AS -> 宿主的唯一入口。把 Array 展平为 Variant 数组后交给宿主桥，
+// 未安装或宿主报错时返回空 Variant 并记录诊断，绝不崩溃（spec §6.2）。
+static void _as_host_call(asIScriptGeneric *p_generic) {
+	const int method_id = (int)p_generic->GetArgDWord(0);
+	const Variant args_value = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
+
+	// storage 必须活到 invoke 返回：宿主按 const Variant* 读取连续元素。
+	Vector<Variant> storage;
+	if (args_value.get_type() == Variant::ARRAY) {
+		const Array args_array = args_value;
+		const int count = args_array.size();
+		storage.resize(count);
+		for (int i = 0; i < count; i++) {
+			storage.set(i, args_array[i]);
+		}
+	}
+
+	Variant ret;
+	const Error err = ASHostBridge::get_singleton()->invoke(
+			method_id, storage.is_empty() ? nullptr : storage.ptr(), storage.size(), &ret);
+	if (err != OK) {
+		ERR_PRINT(vformat("as_host_call(%d) failed: the host bridge is not installed or the host reported an error (error %d).", method_id, (int)err));
+		Variant empty;
+		as_binding_marshal_return(p_generic, AS_KIND_VALUE, empty);
+		return;
+	}
+	as_binding_marshal_return(p_generic, AS_KIND_VALUE, ret);
+}
+
 bool ASEngine::ensure_initialized() {
 	if (engine != nullptr) {
 		return true;
@@ -218,6 +248,10 @@ void ASEngine::_initialize_binding() {
 	ERR_FAIL_COND_MSG(result_emit < 0, vformat("Failed to register the builtin function 'as_emit_signal' (error %d).", result_emit));
 	const int result_callable = engine->RegisterGlobalFunction("Callable as_callable(Object @obj, const String &in method)", asFUNCTION(_as_callable), asCALL_GENERIC);
 	ERR_FAIL_COND_MSG(result_callable < 0, vformat("Failed to register the builtin function 'as_callable' (error %d).", result_callable));
+
+	// M5 互操作 L2：签名用到 Array/Variant 值类型，必须等绑定层就绪后注册。
+	const int result_host_call = engine->RegisterGlobalFunction("Variant as_host_call(int method_id, const Array &in args)", asFUNCTION(_as_host_call), asCALL_GENERIC);
+	ERR_FAIL_COND_MSG(result_host_call < 0, vformat("Failed to register the builtin function 'as_host_call' (error %d).", result_host_call));
 }
 
 bool ASEngine::compile_module(const String &p_name, const String &p_source, String *r_error) {
