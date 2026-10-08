@@ -1,5 +1,6 @@
 #include "../as_engine.h"
 #include "../as_host_bridge.h"
+#include "../as_script.h"
 #include "../binding/as_binding_decl.h"
 
 #define ANGELSCRIPT_HOST_BRIDGE_TESTS_IMPL
@@ -306,4 +307,168 @@ void as_host_call_without_table_reports_error() {
 	// 未安装：脚本继续运行，as_host_call 返回空 Variant（转 int64 为 0），不崩溃。
 	CHECK(ASEngine::execute(engine, func, &ret) == OK);
 	CHECK(g_probe_int == 0);
+}
+
+namespace {
+
+Callable g_bidi_callable;
+
+// id 100 -> 调用 AS 实例方法（host->AS）；其余 id -> 返回 g_stub_return（供重入内层使用）。
+int _stub_invoke_bidi(void *p_user_data, int32_t p_method_id, const Variant *p_args, int32_t p_argc, Variant *r_ret) {
+	(void)p_user_data;
+	if (p_method_id == 100 && g_bidi_callable.is_valid()) {
+		Variant arg = (p_argc > 0) ? p_args[0] : Variant();
+		Variant out = g_bidi_callable.call(arg);
+		if (r_ret != nullptr) {
+			*r_ret = out;
+		}
+		return 0;
+	}
+	if (r_ret != nullptr) {
+		*r_ret = g_stub_return;
+	}
+	return 0;
+}
+
+Variant g_held_object;
+
+// 持有并回传收到的对象元素，用于验证 identity 与生命周期。
+int _stub_invoke_object(void *p_user_data, int32_t p_method_id, const Variant *p_args, int32_t p_argc, Variant *r_ret) {
+	(void)p_user_data;
+	(void)p_method_id;
+	if (p_argc > 0) {
+		// as_host_call 已把传入 Array 展平：p_args[0] 即脚本传入的元素（spec §6.1）。
+		g_held_object = p_args[0];
+		if (r_ret != nullptr) {
+			*r_ret = p_args[0];
+		}
+	}
+	return 0;
+}
+
+ASHostCallbacks _make_bidi_stub() {
+	ASHostCallbacks cb;
+	cb.abi_version = AS_HOST_BRIDGE_ABI_VERSION;
+	cb.struct_size = (uint32_t)sizeof(ASHostCallbacks);
+	cb.user_data = nullptr;
+	cb.invoke = _stub_invoke_bidi;
+	return cb;
+}
+
+ASHostCallbacks _make_object_stub() {
+	ASHostCallbacks cb;
+	cb.abi_version = AS_HOST_BRIDGE_ABI_VERSION;
+	cb.struct_size = (uint32_t)sizeof(ASHostCallbacks);
+	cb.user_data = nullptr;
+	cb.invoke = _stub_invoke_object;
+	return cb;
+}
+
+} // namespace
+
+void as_host_call_bidirectional_roundtrip() {
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as != nullptr);
+	REQUIRE(as->ensure_initialized());
+	asIScriptEngine *engine = as->get_engine();
+	_ensure_probes(engine);
+
+	Ref<ASScript> script;
+	script.instantiate();
+	const String src =
+			"// godot_base: Node\n"
+			"class m5_bidi {\n"
+			"	int on_echo(int x) { return x * 2; }\n"
+			"	int on_reenter(int x) {\n"
+			"		Array a;\n"
+			"		a.push_back(Variant(x));\n"
+			"		return int64(as_host_call(1, a));\n"
+			"	}\n"
+			"	void run_probe() {\n"
+			"		Array a;\n"
+			"		a.push_back(Variant(21));\n"
+			"		probe_int(int64(as_host_call(100, a)));\n"
+			"	}\n"
+			"}\n";
+	String error;
+	REQUIRE_MESSAGE(script->compile_source(src, "res://m5_bidi.as", &error), error);
+
+	Node *owner = memnew(Node);
+	owner->set_script(script);
+	ScriptInstance *inst = owner->get_script_instance();
+	REQUIRE(inst != nullptr);
+
+	ASHostBridge *bridge = ASHostBridge::get_singleton();
+	Callable::CallError ce;
+
+	// 宿主->AS：stub 调用 AS 实例方法并把结果回传脚本。
+	const ASHostCallbacks cb_bidi = _make_bidi_stub();
+	REQUIRE(bridge->install(&cb_bidi) == OK);
+	g_bidi_callable = Callable(owner, StringName("on_echo"));
+	g_probe_int = -1;
+	inst->callp(StringName("run_probe"), nullptr, 0, ce);
+	CHECK(g_probe_int == 42);
+
+	// 重入：AS->宿主->AS->宿主->AS（on_reenter 内层返回 g_stub_return）。
+	g_bidi_callable = Callable(owner, StringName("on_reenter"));
+	g_stub_return = Variant(7);
+	g_probe_int = -1;
+	inst->callp(StringName("run_probe"), nullptr, 0, ce);
+	CHECK(g_probe_int == 7);
+
+	g_bidi_callable = Callable();
+	bridge->uninstall();
+	memdelete(owner);
+}
+
+void as_host_call_object_roundtrip_and_lifetime() {
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as != nullptr);
+	REQUIRE(as->ensure_initialized());
+	asIScriptEngine *engine = as->get_engine();
+	_ensure_probes(engine);
+
+	g_held_object = Variant();
+	g_probe_variant = Variant();
+
+	ASHostBridge *bridge = ASHostBridge::get_singleton();
+	const ASHostCallbacks cb_object = _make_object_stub();
+	REQUIRE(bridge->install(&cb_object) == OK);
+
+	const String src =
+			"void run() {\n"
+			"	Array a;\n"
+			"	RefCounted @obj = RefCounted();\n"
+			"	a.push_back(Variant(obj));\n"
+			"	probe_variant(as_host_call(200, a));\n"
+			"}\n";
+	String error;
+	REQUIRE_MESSAGE(as->compile_module("m5_object", src, &error), error);
+
+	asIScriptFunction *func = engine->GetModule("m5_object")->GetFunctionByDecl("void run()");
+	REQUIRE(func != nullptr);
+	int ret = 0;
+	CHECK(ASEngine::execute(engine, func, &ret) == OK);
+
+	Object *held = g_held_object.get_validated_object();
+	REQUIRE(held != nullptr);
+	if (held == nullptr) {
+		bridge->uninstall();
+		return;
+	}
+	const ObjectID held_id = held->get_instance_id();
+	RefCounted *rc = Object::cast_to<RefCounted>(held);
+	REQUIRE(rc != nullptr);
+
+	// identity：宿主回传的对象与脚本传入的是同一个。
+	CHECK(g_probe_variant.get_validated_object() == held);
+	// 脚本作用域结束后，C++ 侧持有的 Variant 仍在续命。
+	CHECK(rc->get_reference_count() >= 1);
+
+	g_probe_variant = Variant();
+	CHECK(ObjectDB::get_instance(held_id) != nullptr); // g_held_object 仍续命
+	g_held_object = Variant();
+	CHECK(ObjectDB::get_instance(held_id) == nullptr); // 全部释放后销毁
+
+	bridge->uninstall();
 }

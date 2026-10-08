@@ -39,6 +39,8 @@ void as_host_bridge_stale_object_is_safe();
 void as_host_call_scalar_roundtrip();
 void as_host_call_string_and_container_roundtrip();
 void as_host_call_without_table_reports_error();
+void as_host_call_bidirectional_roundtrip();
+void as_host_call_object_roundtrip_and_lifetime();
 
 #ifndef ANGELSCRIPT_HOST_BRIDGE_TESTS_IMPL
 
@@ -64,6 +66,14 @@ TEST_CASE("[AngelScript][HostBridge] as_host_call string and container roundtrip
 
 TEST_CASE("[AngelScript][HostBridge] as_host_call without a table reports an error") {
 	as_host_call_without_table_reports_error();
+}
+
+TEST_CASE("[AngelScript][HostBridge] as_host_call bidirectional roundtrip") {
+	as_host_call_bidirectional_roundtrip();
+}
+
+TEST_CASE("[AngelScript][HostBridge] as_host_call object roundtrip and lifetime") {
+	as_host_call_object_roundtrip_and_lifetime();
 }
 
 #endif // ANGELSCRIPT_HOST_BRIDGE_TESTS_IMPL
