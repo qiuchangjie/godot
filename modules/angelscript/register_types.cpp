@@ -41,6 +41,7 @@
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/os/os.h"
+#include "core/string/print_string.h"
 
 // 本模块的测试用例写在 tests/*.h 里：modules/SCsub 会把它们汇进生成的
 // modules/modules_tests.gen.h，再由 tests/test_main.cpp 统一 include。
@@ -90,6 +91,11 @@ void uninitialize_angelscript_module(ModuleInitializationLevel p_level) {
 	}
 
 	// M5：模块卸载时清空宿主回调表，避免悬挂的函数指针跨模块生命周期存活。
+	// 已知部分启动流程（如 Main::test_setup）会先反初始化再重新初始化模块；此时清表是预期行为，
+	// 但必须留下诊断——否则宿主只看到后续调用全部返回空 Variant，会误判为「从未安装」。
+	if (ASHostBridge::get_singleton()->is_installed()) {
+		print_verbose("AngelScript: clearing the host callback table on module teardown.");
+	}
 	ASHostBridge::get_singleton()->uninstall();
 }
 

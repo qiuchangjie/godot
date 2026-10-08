@@ -41,6 +41,8 @@ void as_host_call_string_and_container_roundtrip();
 void as_host_call_without_table_reports_error();
 void as_host_call_bidirectional_roundtrip();
 void as_host_call_object_roundtrip_and_lifetime();
+void as_host_call_empty_array_reaches_host();
+void as_host_call_stale_object_reaches_host();
 
 #ifndef ANGELSCRIPT_HOST_BRIDGE_TESTS_IMPL
 
@@ -74,6 +76,14 @@ TEST_CASE("[AngelScript][HostBridge] as_host_call bidirectional roundtrip") {
 
 TEST_CASE("[AngelScript][HostBridge] as_host_call object roundtrip and lifetime") {
 	as_host_call_object_roundtrip_and_lifetime();
+}
+
+TEST_CASE("[AngelScript][HostBridge] as_host_call forwards an empty Array as zero args") {
+	as_host_call_empty_array_reaches_host();
+}
+
+TEST_CASE("[AngelScript][HostBridge] as_host_call forwards a stale object safely") {
+	as_host_call_stale_object_reaches_host();
 }
 
 #endif // ANGELSCRIPT_HOST_BRIDGE_TESTS_IMPL

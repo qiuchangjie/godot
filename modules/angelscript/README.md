@@ -39,6 +39,10 @@ AngelScript 脚本可经 `as_host_call(int method_id, const Array &in args) -> V
 - **`Services` 约定（业务层）**：业务层把 C# 侧能力暴露为一个 autoload 单例 `Services`，
   并将其方法映射到 `as_host_call` 的 `method_id`；引擎不提供 `Services` 对象本身。
 - **主线程**：与 AS 引擎一致，所有互操作调用在主线程执行。
+- **安装与卸载时机**：`install()` 须在模块 `MODULE_INITIALIZATION_LEVEL_SERVERS` 初始化完成之后
+  （例如主程序启动、引擎就绪后）调用；模块反初始化会清空回调表，宿主需在模块重新初始化后重新
+  `install()`。`install()` 会**拷贝整张表**，传入的 `ASHostCallbacks` 内存可随即失效；桥不管理
+  `user_data`，宿主须保证其指向的对象在 `uninstall()` 之前一直有效。
 
 ## 脚本约定
 
