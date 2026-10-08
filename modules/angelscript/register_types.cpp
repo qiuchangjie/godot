@@ -32,6 +32,7 @@
 
 #include "as_bytecode.h"
 #include "as_engine.h"
+#include "as_host_bridge.h"
 #include "as_resource_format.h"
 #include "as_script_language.h"
 #include "binding/as_binding_dumper.h"
@@ -87,6 +88,9 @@ void uninitialize_angelscript_module(ModuleInitializationLevel p_level) {
 		ResourceSaver::remove_resource_format_saver(resource_saver_as);
 		resource_saver_as.unref();
 	}
+
+	// M5：模块卸载时清空宿主回调表，避免悬挂的函数指针跨模块生命周期存活。
+	ASHostBridge::get_singleton()->uninstall();
 }
 
 void angelscript_dump_api(const String &p_dir) {

@@ -22,6 +22,24 @@
 
 尚未提供（后续里程碑）：跨语言通道的对象/字符串回调编组（`_input` 等带参回调仍不派发）、协程（await）、编辑器语言服务与断点调试（`validate()` / `find_function()` / `make_function()` 等暂为 stub）、脚本内自定义类注册进 ClassDB。
 
+## 宿主桥（M5 互操作 L2）
+
+AngelScript 脚本可经 `as_host_call(int method_id, const Array &in args) -> Variant` 调用宿主
+（业务层）注册的方法，实现 AS ↔ C#（经 NativeAOT）的双向互操作。引擎侧只提供低层机制，
+不包含具体业务接口。
+
+- **回调表**：宿主通过 `ASHostBridge::get_singleton()->install(&callbacks)` 安装一张版本化的
+  `ASHostCallbacks`。`abi_version` 必须等于 `AS_HOST_BRIDGE_ABI_VERSION`（当前为 `1`）；
+  `struct_size` 不得小于本结构大小，否则安装被拒绝。表按**数字 `method_id`** 派发，
+  `method_id` 到方法名/签名的映射属业务层。
+- **编组**：参数与返回值统一为 `Variant`；只传 Variant 内建类型与 Godot 对象，禁止逐帧
+  高频调用，批量数据用 `Array`/`Dictionary`。`RefCounted` 由 `Variant` 续命。
+- **反向调用（host → AS）**：复用 Godot 对象模型——宿主持有指向 AS 实例方法的 `Callable`
+  （或 `Object.call`）即可回调脚本。
+- **`Services` 约定（业务层）**：业务层把 C# 侧能力暴露为一个 autoload 单例 `Services`，
+  并将其方法映射到 `as_host_call` 的 `method_id`；引擎不提供 `Services` 对象本身。
+- **主线程**：与 AS 引擎一致，所有互操作调用在主线程执行。
+
 ## 脚本约定
 
 - 扩展名：`.as`（源码）与 `.asb`（预编译字节码容器，M4）均可加载。`.asb` 由 `--compile-angelscript` 离线生成：容器携带基类名与所需的 ClassDB 类型符号表，加载前只对这些类型做增量注册（不退回全量注册）；字节码脚本没有 `source_code`，`reload()` 返回 `ERR_INVALID_DATA`，类名同样必须等于文件名，且 `.asb` 必须与生成它的引擎 ABI 一致（版本/签名校验与回退策略由业务层 manifest 负责，本模块不做校验）。
@@ -130,6 +148,7 @@ class signal_demo {
 | `Object @as_self()` | 取当前脚本实例承载的节点（弱句柄），见「信号（M3）」。 |
 | `void as_emit_signal(Object @obj, const String &in name, const Array &in args)` | 发射 `obj` 上的信号 `name`，`args` 为实参数组。 |
 | `Callable as_callable(Object @obj, const String &in method)` | 把 `obj` 上的方法包装成 `Callable`，配合 `Object.connect` 接收信号。 |
+| `Variant as_host_call(int method_id, const Array &in args)` | 调用宿主注册的 `method_id` 方法（M5 互操作 L2），`args` 按顺序展平为实参；未安装宿主表或宿主报错时返回空 `Variant`，见「宿主桥（M5 互操作 L2）」。 |
 
 内建函数统一使用泛型调用约定（`asCALL_GENERIC`），与绑定层保持同一形态。`as_log_string` 在绑定层值类型注册之后才注册，因为它用的是绑定层的 Godot `String` 值类型。
 
@@ -186,6 +205,7 @@ bin\godot.windows.editor.x86_64.console.exe --headless --path modules/angelscrip
 | --- | --- |
 | `as_script_language.h/.cpp` | `ScriptLanguage` 实现（单例、语言名 `AngelScript`、扩展名 `as`）。 |
 | `as_engine.h/.cpp` | AS 引擎持有者：懒初始化、模块编译、`execute`/`call_function`、内建注册与绑定层接线。 |
+| `as_host_bridge.h/.cpp` | M5 宿主回调桥：持有并校验版本化的 `ASHostCallbacks`，按 `method_id` 派发（宿主桥 L2 边界）。 |
 | `as_script.h/.cpp` | `Script` 实现（`.as` 资源：基类指令解析、类名校验、编译）。 |
 | `as_script_instance.h/.cpp` | `ScriptInstance` 实现（实例创建、属性读写、方法/通知派发）。 |
 | `as_resource_format.h/.cpp` | `.as`/`.asb` 的资源加载器与保存器。 |
