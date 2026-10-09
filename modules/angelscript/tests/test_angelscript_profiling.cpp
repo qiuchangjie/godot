@@ -163,7 +163,10 @@ void as_profiling_records_real_execution() {
 	}
 
 	String err;
-	REQUIRE(as->compile_module("as_profiling_test", "int main() { return 7; }", &err));
+	REQUIRE_MESSAGE(as->compile_module("as_profiling_test", "int main() { return 7; }", &err), err);
+	if (!err.is_empty()) {
+		return;
+	}
 	asIScriptModule *mod = as->get_engine()->GetModule("as_profiling_test");
 	REQUIRE(mod != nullptr);
 	if (mod == nullptr) {
@@ -183,12 +186,28 @@ void as_profiling_records_real_execution() {
 
 	ScriptLanguage::ProfilingInfo info[8];
 	const int count = lang->profiling_get_accumulated_data(info, 8);
+
+	// 编辑器 Profiler 面板按 "<path>::<line>::<func>" 三段解析签名
+	// （script_editor_debugger.cpp:872）；段数不对会让面板行名空白、源码跳转失效，
+	// 所以这里断言的是消费侧契约（可解析的结构），而不是实现自己拼出的字符串。
+	bool has = false;
+	Vector<String> parts;
 	ScriptLanguage::ProfilingInfo found;
-	const bool has = _find_profile(info, count, "as_profiling_test::main", &found);
+	for (int i = 0; i < count; i++) {
+		const Vector<String> candidate = String(info[i].signature).split("::");
+		if (candidate.size() == 3 && candidate[2] == "main") {
+			has = true;
+			parts = candidate;
+			found = info[i];
+			break;
+		}
+	}
 	REQUIRE(has);
 	if (!has) {
 		return;
 	}
+	CHECK(parts[0] == "as_profiling_test");
+	CHECK(parts[1].to_int() >= 1);
 	CHECK(found.call_count == 1);
 }
 
