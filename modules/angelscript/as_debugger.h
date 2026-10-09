@@ -51,6 +51,16 @@ class ASDebugger {
 public:
 	// 唯一的回调安装入口。所有上下文创建后必须经此装配（见 ASEngine::create_context）。
 	static void attach(asIScriptContext *p_ctx);
+	static void on_exception(asIScriptContext *p_ctx, void *p_user);
+
+	// 这个异常是否值得打断执行：脚本自己 try/catch 接住的异常不是故障。
+	// 单独抽成谓词是为了可测——headless 下 EngineDebugger 不活跃，
+	// on_exception 整体会提前返回，只有这个谓词能被独立断言。
+	static bool is_unhandled_exception(asIScriptContext *p_ctx);
+
+	// 本次异常是否已由调试器以富信息形式上报；读后清零。
+	// call_function 用它决定要不要再打那条干巴巴的 ERR_PRINT，避免同一异常出现两条。
+	static bool consume_exception_reported();
 
 	static asIScriptContext *get_break_context();
 	static String get_error();

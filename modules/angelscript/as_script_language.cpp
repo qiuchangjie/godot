@@ -30,11 +30,16 @@
 
 #include "as_script_language.h"
 
+#include "as_debugger.h"
 #include "as_engine.h"
 #include "as_script.h"
 
 #include "core/config/project_settings.h"
+#include "core/debugger/engine_debugger.h"
+#include "core/debugger/script_debugger.h"
 #include "core/object/class_db.h"
+
+#include <angelscript.h>
 
 ASScriptLanguage *ASScriptLanguage::singleton = nullptr;
 
@@ -155,6 +160,25 @@ Ref<Script> ASScriptLanguage::make_template(const String &p_template, const Stri
 
 	scr->set_source_code(vformat("// godot_base: %s\n\nclass %s {\n}\n", base, p_class_name.strip_edges()));
 	return scr;
+}
+
+bool ASScriptLanguage::debug_break(const String &p_error, bool p_allow_continue) {
+	if (!EngineDebugger::is_active()) {
+		return false;
+	}
+	// is_error_breakpoint = true：这是异常断点，不是用户主动下的断点。
+	EngineDebugger::get_script_debugger()->debug(this, p_allow_continue, true);
+	return true;
+}
+
+Vector<ScriptLanguage::StackInfo> ASScriptLanguage::debug_get_current_stack_info() {
+	asIScriptContext *ctx = ASDebugger::get_break_context();
+	if (ctx == nullptr) {
+		// 不在断点期间时退回到「当前线程正在执行的上下文」，这样即使是 AS 调用的某个
+		// Godot API 报错，AS 的栈帧也能并进那条错误的回溯里。
+		ctx = asGetActiveContext();
+	}
+	return ASDebugger::build_stack_info(ctx);
 }
 
 String ASScriptLanguage::debug_get_error() const {
