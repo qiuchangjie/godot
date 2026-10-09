@@ -43,6 +43,13 @@
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 
+#ifdef TOOLS_ENABLED
+#include "editor/as_syntax_highlighter.h"
+#include "editor/editor_node.h"
+#include "editor/script/script_editor_plugin.h"
+#include "editor/script/syntax_highlighters.h"
+#endif
+
 // 本模块的测试用例写在 tests/*.h 里：modules/SCsub 会把它们汇进生成的
 // modules/modules_tests.gen.h，再由 tests/test_main.cpp 统一 include。
 // 此处不要再手工 include 测试头，否则用例会被注册两次。
@@ -51,7 +58,23 @@ ASScriptLanguage *script_language_as = nullptr;
 Ref<ASResourceFormatLoaderASScript> resource_loader_as;
 Ref<ASResourceFormatSaverASScript> resource_saver_as;
 
+#ifdef TOOLS_ENABLED
+// 编辑器初始化回调：在 ScriptEditor 就绪后注册 AS 语法高亮器。
+static void _as_editor_init() {
+	Ref<ASSyntaxHighlighter> highlighter;
+	highlighter.instantiate();
+	ScriptEditor::get_singleton()->register_syntax_highlighter(highlighter);
+}
+#endif
+
 void initialize_angelscript_module(ModuleInitializationLevel p_level) {
+#ifdef TOOLS_ENABLED
+	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+		GDREGISTER_CLASS(ASSyntaxHighlighter);
+		return;
+	}
+#endif
+
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SERVERS) {
 		return;
 	}
@@ -66,6 +89,10 @@ void initialize_angelscript_module(ModuleInitializationLevel p_level) {
 	ResourceLoader::add_resource_format_loader(resource_loader_as);
 	resource_saver_as.instantiate();
 	ResourceSaver::add_resource_format_saver(resource_saver_as);
+
+#ifdef TOOLS_ENABLED
+	EditorNode::add_init_callback(_as_editor_init);
+#endif
 }
 
 void uninitialize_angelscript_module(ModuleInitializationLevel p_level) {

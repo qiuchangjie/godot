@@ -35,6 +35,8 @@
 #define ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL
 #include "test_angelscript_highlighter.h"
 
+#include "editor/as_syntax_highlighter.h"
+
 namespace {
 
 Vector<ASToken> tokenize_default(const String &p_line, bool p_in_block = false, bool *r_out = nullptr, const HashSet<StringName> &p_engine = HashSet<StringName>(), const HashSet<StringName> &p_user = HashSet<StringName>()) {
@@ -202,6 +204,18 @@ void as_highlighter_lexer_classifies_identifiers_with_type_precedence() {
 		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("if (x)", false, engine_types, user_types, out);
 		CHECK(tokens[0].type == ASTokenType::KEYWORD);
 	}
+}
+
+void as_syntax_highlighter_reports_language_and_creates_instances() {
+	Ref<ASSyntaxHighlighter> highlighter;
+	highlighter.instantiate();
+	REQUIRE(highlighter.is_valid());
+
+	CHECK(highlighter->_get_name() == "AngelScript");
+	CHECK(highlighter->_get_supported_languages().has("AngelScript"));
+
+	Ref<EditorSyntaxHighlighter> created = highlighter->_create();
+	CHECK(created.is_valid());
 }
 
 #endif // TOOLS_ENABLED
