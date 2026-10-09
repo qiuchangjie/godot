@@ -33,8 +33,12 @@
 #include "as_script_language.h"
 
 #include "binding/as_binding_decl.h"
+#include "binding/as_binding_object.h"
+
 #include "core/debugger/engine_debugger.h"
 #include "core/debugger/script_debugger.h"
+#include "core/object/class_db.h"
+#include "core/variant/dictionary.h"
 
 #include <angelscript.h>
 
@@ -242,7 +246,71 @@ Variant ASDebugger::decode_var(void *p_addr, int p_type_id, asIScriptEngine *p_e
 		return *reinterpret_cast<const Variant *>(p_addr);
 	}
 
-	// Task 4 会在这里补上 AS 脚本 class 与 Godot 对象句柄两类。
+	// 一次解引用规则：GetAddressOfVar / GetAddressOfProperty 已经替我们解过一层
+	// 引用（堆上对象、引用参数），但对句柄明确不解。所以非句柄类型的 p_addr 直指
+	// 数据本体，句柄类型的 p_addr 指向句柄槽，槽值才是对象。
+	//
+	// 先判脚本对象再判句柄：`MyClass @h` 两位会同时置位，顺序反了就会把脚本对象
+	// 当成 Godot 对象去喂 as_handle_decode。
+	if (is_script_object) {
+		asIScriptObject *obj = is_handle
+				? *reinterpret_cast<asIScriptObject *const *>(p_addr)
+				: reinterpret_cast<asIScriptObject *>(p_addr);
+		if (obj == nullptr) {
+			return Variant();
+		}
+		// 深度在「即将往下展开一层」时才判，这样 max_depth = 1 的顶层对象仍能看到
+		// 自己的标量成员，而不是整个变成一个 "<...>"。
+		if (p_depth >= p_max_depth) {
+			return "<...>";
+		}
+		if (r_seen.has(obj)) {
+			return "<cycle>";
+		}
+
+		r_seen.insert(obj);
+		Dictionary members;
+		asITypeInfo *obj_type = obj->GetObjectType();
+		members["<class>"] = (obj_type != nullptr && obj_type->GetName() != nullptr)
+				? String::utf8(obj_type->GetName())
+				: String("<anonymous>");
+
+		const int prop_count = (int)obj->GetPropertyCount();
+		const int limit = p_max_subitems >= 0 ? MIN(prop_count, p_max_subitems) : prop_count;
+		for (int i = 0; i < limit; i++) {
+			const char *prop_name = obj->GetPropertyName((asUINT)i);
+			void *prop_addr = obj->GetAddressOfProperty((asUINT)i);
+			if (prop_addr == nullptr) {
+				continue;
+			}
+			const String key = prop_name != nullptr ? String::utf8(prop_name) : ("<prop " + itos(i) + ">");
+			members[key] = decode_var(prop_addr, obj->GetPropertyTypeId((asUINT)i), p_engine, p_depth + 1, p_max_depth, p_max_subitems, r_seen);
+		}
+		if (limit < prop_count) {
+			members["<truncated>"] = prop_count - limit;
+		}
+		// 出栈时移除：只禁环，不禁同级出现两次的同一个对象（那是合法的 DAG）。
+		r_seen.erase(obj);
+		return members;
+	}
+
+	// Godot 对象句柄：槽的语义由静态类型是否派生自 RefCounted 决定，
+	// 解码必须经 as_handle_decode——OWNING 槽是裸 Object*，NONOWNING 槽是 ObjectID
+	// 且需要经 ObjectDB 校验（对象可能已经被 free 掉了）。绝不在这里自己强转。
+	if (is_handle && !type_name.is_empty() && ClassDB::class_exists(type_name)) {
+		void *slot = *reinterpret_cast<void *const *>(p_addr);
+		if (slot == nullptr) {
+			return Variant();
+		}
+		const ASBindingKind kind = ClassDB::is_parent_class(type_name, "RefCounted")
+				? AS_KIND_OBJECT_OWNING
+				: AS_KIND_OBJECT_NONOWNING;
+		Object *obj = as_handle_decode(slot, kind);
+		// 对象已销毁时给空 Variant：调试查询发生在程序已经出错的时刻，
+		// 二次崩溃会毁掉整个诊断现场。
+		return obj != nullptr ? Variant(obj) : Variant();
+	}
+
 	const char *decl = p_engine->GetTypeDeclaration(p_type_id, true);
 	return "<" + (decl != nullptr ? String::utf8(decl) : String("unknown")) + ">";
 }
@@ -278,5 +346,41 @@ void ASDebugger::get_stack_level_locals(asIScriptContext *p_ctx, int p_level, Li
 		HashSet<const void *> seen;
 		p_names->push_back(name != nullptr ? String::utf8(name) : ("<var " + itos(i) + ">"));
 		p_values->push_back(decode_var(addr, type_id, engine, 0, depth_limit, p_max_subitems, seen));
+	}
+}
+
+void ASDebugger::get_stack_level_members(int p_level, List<String> *p_names, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+	get_stack_level_members(g_break_context, p_level, p_names, p_values, p_max_subitems, p_max_depth);
+}
+
+void ASDebugger::get_stack_level_members(asIScriptContext *p_ctx, int p_level, List<String> *p_names, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+	if (!is_level_valid(p_ctx, p_level) || p_names == nullptr || p_values == nullptr) {
+		return;
+	}
+
+	asIScriptEngine *engine = p_ctx->GetEngine();
+	if (engine == nullptr) {
+		return;
+	}
+	// 全局函数帧没有 this，这时什么都不填。
+	asIScriptObject *self = reinterpret_cast<asIScriptObject *>(p_ctx->GetThisPointer((asUINT)p_level));
+	if (self == nullptr) {
+		return;
+	}
+
+	const int depth_limit = p_max_depth >= 0 ? p_max_depth : DEFAULT_MAX_DEPTH;
+	const int prop_count = (int)self->GetPropertyCount();
+	const int limit = p_max_subitems >= 0 ? MIN(prop_count, p_max_subitems) : prop_count;
+	for (int i = 0; i < limit; i++) {
+		void *addr = self->GetAddressOfProperty((asUINT)i);
+		if (addr == nullptr) {
+			continue;
+		}
+		const char *prop_name = self->GetPropertyName((asUINT)i);
+
+		HashSet<const void *> seen;
+		seen.insert(self);
+		p_names->push_back(prop_name != nullptr ? String::utf8(prop_name) : ("<prop " + itos(i) + ">"));
+		p_values->push_back(decode_var(addr, self->GetPropertyTypeId((asUINT)i), engine, 0, depth_limit, p_max_subitems, seen));
 	}
 }

@@ -30,6 +30,9 @@
 
 #include "../as_debugger.h"
 #include "../as_engine.h"
+#include "../binding/as_binding_object.h"
+
+#include "core/object/object.h"
 
 #include <angelscript.h>
 
@@ -134,6 +137,64 @@ Variant find_local(const String &p_name) {
 	return Variant();
 }
 
+int g_locals_max_depth = -1;
+
+void capture_locals_with_depth(asIScriptContext *p_ctx) {
+	g_local_names.clear();
+	g_local_values.clear();
+	ASDebugger::get_stack_level_locals(p_ctx, 0, &g_local_names, &g_local_values, -1, g_locals_max_depth);
+}
+
+// 非空时在解码之前把它 free 掉，用来模拟「调试器查看变量时对象已经没了」。
+Object *g_free_before_decode = nullptr;
+
+void probe_object_handle(asIScriptContext *p_ctx) {
+	if (g_free_before_decode != nullptr) {
+		memdelete(g_free_before_decode);
+		g_free_before_decode = nullptr;
+	}
+	capture_locals(p_ctx);
+}
+
+// 带一个 Object@ 实参调用脚本函数。ASEngine::call_function 目前只编组标量实参
+// （as_engine.cpp 的 default 分支直接返回 ERR_INVALID_PARAMETER），所以这里自己
+// 按绑定层的槽语义编码句柄再 SetArgAddress——与绑定层产出的槽完全同构。
+// 返回 false 表示编译/查找阶段就失败了。
+bool run_with_object_arg(const String &p_source, Object *p_arg, ProbeFn p_probe) {
+	ASEngine *as = ASEngine::get_singleton();
+	if (as == nullptr || !as->ensure_initialized()) {
+		return false;
+	}
+	const String module_name = next_module_name();
+	String err;
+	if (!as->compile_module(module_name, p_source, &err)) {
+		return false;
+	}
+	asIScriptModule *mod = as->get_engine()->GetModule(module_name.utf8().get_data());
+	if (mod == nullptr) {
+		return false;
+	}
+	asIScriptFunction *func = mod->GetFunctionByName("probe");
+	if (func == nullptr) {
+		return false;
+	}
+	asIScriptContext *ctx = as->get_engine()->CreateContext();
+	if (ctx == nullptr) {
+		return false;
+	}
+
+	g_probe = p_probe;
+	ctx->SetExceptionCallback(asFUNCTION(probe_callback), nullptr, asCALL_CDECL);
+	ctx->Prepare(func);
+	// Object 不派生自 RefCounted，槽里放的是 ObjectID 而不是裸指针。
+	ctx->SetArgAddress(0, as_handle_encode(p_arg, AS_KIND_OBJECT_NONOWNING));
+	ctx->Execute();
+
+	g_probe = nullptr;
+	ctx->Release();
+	return true;
+}
+
 } // namespace
 
 void test_builds_stack_info() {
@@ -236,6 +297,102 @@ void test_decodes_bound_value_type() {
 		return;
 	}
 	CHECK(Vector2(got) == Vector2(3, 4));
+}
+
+void test_expands_script_class() {
+	// node.next 指回 node 自身，构造一个环。解码器必须在第二次遇到它时返回 "<cycle>"，
+	// 而不是无限递归把栈撑爆。
+	const String source =
+			"class Node2 {\n"
+			"	int id;\n"
+			"	double weight;\n"
+			"	Node2 @next;\n"
+			"}\n"
+			"void probe() {\n"
+			"	Node2 node;\n"
+			"	node.id = 7;\n"
+			"	node.weight = 2.5;\n"
+			"	@node.next = node;\n"
+			"	int d = 0;\n"
+			"	int boom = 1 / d;\n"
+			"}\n";
+
+	g_locals_max_depth = -1;
+	String module_name;
+	bool ran = run_until_exception(source, "probe", capture_locals_with_depth, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+
+	const Variant got = find_local("node");
+	REQUIRE(got.get_type() == Variant::DICTIONARY);
+	if (got.get_type() != Variant::DICTIONARY) {
+		return;
+	}
+	const Dictionary dict = got;
+	CHECK(dict.has("<class>"));
+	CHECK(String(dict["<class>"]) == "Node2");
+	CHECK(dict["id"] == Variant(7));
+	CHECK(dict["weight"] == Variant(2.5));
+
+	REQUIRE(dict.has("next"));
+	if (!dict.has("next")) {
+		return;
+	}
+	// 环上的那一跳：next 指回 node，必须被环检测拦住。
+	CHECK(dict["next"] == Variant("<cycle>"));
+
+	// 深度上限：max_depth = 1 时顶层标量仍是真值，但不再往下展开一层对象。
+	g_locals_max_depth = 1;
+	g_local_names.clear();
+	g_local_values.clear();
+	ran = run_until_exception(source, "probe", capture_locals_with_depth, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+	const Variant shallow = find_local("node");
+	REQUIRE(shallow.get_type() == Variant::DICTIONARY);
+	if (shallow.get_type() != Variant::DICTIONARY) {
+		return;
+	}
+	const Dictionary shallow_dict = shallow;
+	CHECK(shallow_dict["id"] == Variant(7));
+	CHECK(shallow_dict["next"] == Variant("<...>"));
+}
+
+void test_decodes_object_handle() {
+	// Object 不派生自 RefCounted，所以句柄槽里放的是 ObjectID 而不是裸指针。
+	// 这条用例同时钉住两件事：槽只能解一层引用、且必须经 as_handle_decode。
+	const String source =
+			"void probe(Object @o) {\n"
+			"	int d = 0;\n"
+			"	int boom = 1 / d;\n"
+			"}\n";
+
+	Object *alive = memnew(Object);
+	g_free_before_decode = nullptr;
+	bool ran = run_with_object_arg(source, alive, probe_object_handle);
+	REQUIRE(ran);
+	if (!ran) {
+		memdelete(alive);
+		return;
+	}
+	const Variant got = find_local("o");
+	CHECK(got.get_type() == Variant::OBJECT);
+	CHECK(got.get_validated_object() == alive);
+	memdelete(alive);
+
+	// 对象在解码之前被销毁：必须给空 Variant，绝不能二次崩溃毁掉诊断现场。
+	Object *doomed = memnew(Object);
+	g_free_before_decode = doomed;
+	ran = run_with_object_arg(source, doomed, probe_object_handle);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+	CHECK(find_local("o").get_validated_object() == nullptr);
 }
 
 } // namespace TestAngelScriptDebugger
