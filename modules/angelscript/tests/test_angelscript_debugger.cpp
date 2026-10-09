@@ -195,6 +195,32 @@ bool run_with_object_arg(const String &p_source, Object *p_arg, ProbeFn p_probe)
 	return true;
 }
 
+// 对一个给定的上下文，用越界的层号把全部查询跑一遍，断言都返回安全默认值。
+void expect_safe_defaults(asIScriptContext *p_ctx, int p_level) {
+	CHECK(ASDebugger::get_stack_level_line(p_ctx, p_level) == -1);
+	CHECK(ASDebugger::get_stack_level_function(p_ctx, p_level) == String());
+	CHECK(ASDebugger::get_stack_level_source(p_ctx, p_level) == String());
+	CHECK(ASDebugger::parse_stack_level_expression(p_ctx, p_level, "anything") == String());
+
+	List<String> names;
+	List<Variant> values;
+	ASDebugger::get_stack_level_locals(p_ctx, p_level, &names, &values, -1, -1);
+	CHECK(names.is_empty());
+	CHECK(values.is_empty());
+
+	ASDebugger::get_stack_level_members(p_ctx, p_level, &names, &values, -1, -1);
+	CHECK(names.is_empty());
+	CHECK(values.is_empty());
+}
+
+void probe_invalid_levels(asIScriptContext *p_ctx) {
+	expect_safe_defaults(p_ctx, -1);
+	expect_safe_defaults(p_ctx, 999);
+	// 合法层上的未知表达式同样要返回空串，而不是瞎猜。
+	CHECK(ASDebugger::parse_stack_level_expression(p_ctx, 0, "no_such_name") == String());
+	CHECK(ASDebugger::parse_stack_level_expression(p_ctx, 0, "a") == String("42"));
+}
+
 } // namespace
 
 void test_builds_stack_info() {
@@ -393,6 +419,39 @@ void test_decodes_object_handle() {
 		return;
 	}
 	CHECK(find_local("o").get_validated_object() == nullptr);
+}
+
+void test_handles_invalid_level() {
+	// 没有断点时（break_context == nullptr），所有无参查询必须给安全默认值。
+	CHECK(ASDebugger::get_break_context() == nullptr);
+	CHECK(ASDebugger::get_stack_level_count() == 0);
+	CHECK(ASDebugger::get_stack_level_line(0) == -1);
+	CHECK(ASDebugger::get_stack_level_function(0) == String());
+	CHECK(ASDebugger::get_stack_level_source(0) == String());
+	CHECK(ASDebugger::parse_stack_level_expression(0, "a") == String());
+
+	List<String> names;
+	List<Variant> values;
+	ASDebugger::get_stack_level_locals(0, &names, &values, -1, -1);
+	CHECK(names.is_empty());
+	ASDebugger::get_stack_level_members(0, &names, &values, -1, -1);
+	CHECK(names.is_empty());
+
+	expect_safe_defaults(nullptr, 0);
+
+	const String source =
+			"void probe() {\n"
+			"	int a = 42;\n"
+			"	int d = 0;\n"
+			"	int boom = 1 / d;\n"
+			"}\n";
+
+	String module_name;
+	const bool ran = run_until_exception(source, "probe", probe_invalid_levels, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
 }
 
 } // namespace TestAngelScriptDebugger

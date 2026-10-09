@@ -384,3 +384,34 @@ void ASDebugger::get_stack_level_members(asIScriptContext *p_ctx, int p_level, L
 		p_values->push_back(decode_var(addr, self->GetPropertyTypeId((asUINT)i), engine, 0, depth_limit, p_max_subitems, seen));
 	}
 }
+
+String ASDebugger::parse_stack_level_expression(int p_level, const String &p_expression) {
+	return parse_stack_level_expression(g_break_context, p_level, p_expression);
+}
+
+String ASDebugger::parse_stack_level_expression(asIScriptContext *p_ctx, int p_level, const String &p_expression) {
+	if (!is_level_valid(p_ctx, p_level) || p_expression.is_empty()) {
+		return String();
+	}
+
+	List<String> names;
+	List<Variant> values;
+	get_stack_level_locals(p_ctx, p_level, &names, &values, -1, -1);
+
+	for (int pass = 0; pass < 2; pass++) {
+		const List<String>::Element *n = names.front();
+		const List<Variant>::Element *v = values.front();
+		while (n != nullptr && v != nullptr) {
+			if (n->get() == p_expression) {
+				return v->get().operator String();
+			}
+			n = n->next();
+			v = v->next();
+		}
+		// 局部变量里没找到，再查一遍 this 的成员。
+		names.clear();
+		values.clear();
+		get_stack_level_members(p_ctx, p_level, &names, &values, -1, -1);
+	}
+	return String();
+}
