@@ -182,36 +182,40 @@ Vector<ScriptLanguage::StackInfo> ASScriptLanguage::debug_get_current_stack_info
 }
 
 String ASScriptLanguage::debug_get_error() const {
-	return String();
+	return ASDebugger::get_error();
 }
 
 int ASScriptLanguage::debug_get_stack_level_count() const {
-	return 0;
+	return ASDebugger::get_stack_level_count();
 }
 
 int ASScriptLanguage::debug_get_stack_level_line(int p_level) const {
-	return -1;
+	return ASDebugger::get_stack_level_line(p_level);
 }
 
 String ASScriptLanguage::debug_get_stack_level_function(int p_level) const {
-	return String();
+	return ASDebugger::get_stack_level_function(p_level);
 }
 
 String ASScriptLanguage::debug_get_stack_level_source(int p_level) const {
-	return String();
+	return ASDebugger::get_stack_level_source(p_level);
 }
 
 void ASScriptLanguage::debug_get_stack_level_locals(int p_level, List<String> *p_locals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+	ASDebugger::get_stack_level_locals(p_level, p_locals, p_values, p_max_subitems, p_max_depth);
 }
 
 void ASScriptLanguage::debug_get_stack_level_members(int p_level, List<String> *p_members, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+	ASDebugger::get_stack_level_members(p_level, p_members, p_values, p_max_subitems, p_max_depth);
 }
 
 void ASScriptLanguage::debug_get_globals(List<String> *p_globals, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+	// AS 的全局变量属于 module 而非 context，而本模块一个脚本就是一个 module，
+	// 没有跨脚本的「全局作用域」概念可供展示。保持空实现。
 }
 
 String ASScriptLanguage::debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems, int p_max_depth) {
-	return String();
+	return ASDebugger::parse_stack_level_expression(p_level, p_expression);
 }
 
 void ASScriptLanguage::reload_all_scripts() {

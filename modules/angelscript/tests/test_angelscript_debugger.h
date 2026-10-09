@@ -40,6 +40,7 @@ void test_reads_locals();
 void test_decodes_bound_value_type();
 void test_expands_script_class();
 void test_decodes_object_handle();
+void test_handles_invalid_level();
 
 #ifndef ANGELSCRIPT_DEBUGGER_TESTS_IMPL
 
@@ -65,6 +66,10 @@ TEST_CASE("[AngelScript] 调试器能递归展开脚本类并挡住环与深度"
 
 TEST_CASE("[AngelScript] 调试器解码 Godot 对象句柄且容忍对象已销毁") {
 	test_decodes_object_handle();
+}
+
+TEST_CASE("[AngelScript] 调试器对失效输入返回安全默认值") {
+	test_handles_invalid_level();
 }
 
 #endif
