@@ -31,8 +31,11 @@
 #pragma once
 
 #include "core/object/script_language.h"
+#include "core/templates/hash_set.h"
 
 #include <angelscript.h>
+
+class ASScriptInstance;
 
 // 一个 .as 资源 = 一个 AngelScript 模块 + 其中与文件名同名的脚本类。
 // 本阶段（M1）刻意不实现实例化：instance_create() 返回 nullptr，由 Task 4 的
@@ -58,6 +61,16 @@ class ASScript : public Script {
 
 	static asITypeInfo *_find_script_class(asIScriptModule *p_module, const String &p_class_name);
 
+#ifdef TOOLS_ENABLED
+	// 编辑器在脚本尚不可实例化时（如刚创建、未编译）会请求占位实例（见 placeholder_instance_create）。
+	// 集合用于在占位实例析构时经 _placeholder_erased 回收，避免留下悬垂指针。
+	HashSet<PlaceHolderScriptInstance *> placeholders;
+
+	// 已实例化的脚本实例集合。热重载必须在重编译前摘除它们：reload→clear 会
+	// DiscardModule，仍被引用的 asIScriptObject 会随之悬垂。集合让语言层能枚举承载对象。
+	HashSet<ASScriptInstance *> instances;
+#endif
+
 public:
 	static String get_class_name_for_path(const String &p_path);
 
@@ -81,6 +94,16 @@ public:
 	virtual bool inherits_script(const Ref<Script> &p_script) const override { return false; }
 	virtual StringName get_instance_base_type() const override { return instance_base_type; }
 	virtual ScriptInstance *instance_create(Object *p_this) override;
+	virtual PlaceHolderScriptInstance *placeholder_instance_create(Object *p_this) override;
+#ifdef TOOLS_ENABLED
+	void _add_instance(ASScriptInstance *p_instance);
+	void _remove_instance(ASScriptInstance *p_instance);
+	// 重编译后刷新所有占位实例的属性列表，触发 Inspector 重绘（等价 GDScript update_exports）。
+	void update_placeholders();
+	// 热重载：摘除实例与占位实例、重编译、重挂并恢复属性状态。
+	// 编辑器保存 .as 时经 ASScriptLanguage::reload_tool_script 调用。
+	void reload_with_instances(bool p_keep_state);
+#endif
 	virtual bool has_source_code() const override { return !source_code.is_empty(); }
 	virtual String get_source_code() const override { return source_code; }
 	virtual void set_source_code(const String &p_code) override { source_code = p_code; }
@@ -89,6 +112,7 @@ public:
 	virtual StringName get_doc_class_name() const override { return StringName(); }
 	virtual Vector<DocData::ClassDoc> get_documentation() const override { return Vector<DocData::ClassDoc>(); }
 	virtual String get_class_icon_path() const override { return String(); }
+	virtual void _placeholder_erased(PlaceHolderScriptInstance *p_placeholder) override;
 #endif
 	virtual bool has_method(const StringName &p_method) const override;
 	virtual MethodInfo get_method_info(const StringName &p_method) const override { return MethodInfo(); }

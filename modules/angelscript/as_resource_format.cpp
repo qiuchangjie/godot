@@ -31,8 +31,10 @@
 #include "as_resource_format.h"
 
 #include "as_script.h"
+#include "as_script_language.h"
 
 #include "core/io/file_access.h"
+#include "core/object/script_language.h"
 #include "core/os/thread.h"
 
 // 加载即编译：把源码交给 ASScript::compile_source()，语法/基类/类名三类错误都在这里拦下，
@@ -63,9 +65,13 @@ Ref<Resource> ASResourceFormatLoaderASScript::load(const String &p_path, const S
 			return Ref<Resource>();
 		}
 
+		// 不在加载器内 set_path：资源缓存（ResourceCache）的登记权归 ResourceLoader——
+		// REUSE 模式由它调用 set_path 登记，IGNORE 模式调用 set_path_cache 故意不登记。
+		// 加载器若自行 set_path，在编辑器 ScriptEditor::_reload_scripts() 的 CACHE_MODE_IGNORE
+		// 重载路径下会撞上缓存中既有的同名内存脚本，报 “possible cyclic resource inclusion”，
+		// 随后 path_cache 为空、编译失败并返回 null（表现为 Script Editor 的 rel_scr.is_null()）。
 		Ref<ASScript> script;
 		script.instantiate();
-		script->set_path(script_path);
 
 		String error;
 		if (!script->load_bytecode(bytes, script_path, &error)) {
@@ -90,13 +96,15 @@ Ref<Resource> ASResourceFormatLoaderASScript::load(const String &p_path, const S
 		return Ref<Resource>();
 	}
 
+	// 路径显式传给 compile_source（类名与模块名都由它推导），但不在加载器内 set_path，
+	// 理由同 `.asb` 分支：把缓存登记权留给 ResourceLoader，避免 IGNORE 重载时自撞缓存。
+	const String script_path = p_original_path.is_empty() ? p_path : p_original_path;
 	Ref<ASScript> script;
 	script.instantiate();
 	script->set_source_code(f->get_as_text());
-	script->set_path(p_original_path.is_empty() ? p_path : p_original_path);
 
 	String error;
-	if (!script->compile_source(script->get_source_code(), script->get_path(), &error)) {
+	if (!script->compile_source(script->get_source_code(), script_path, &error)) {
 		ERR_PRINT(vformat("Failed to load AngelScript '%s': %s", p_path, error));
 		if (r_error) {
 			*r_error = ERR_PARSE_ERROR;
@@ -133,6 +141,12 @@ Error ASResourceFormatSaverASScript::save(const Ref<Resource> &p_resource, const
 	ERR_FAIL_COND_V_MSG(err != OK, err, "Cannot save AngelScript to '" + p_path + "'.");
 
 	f->store_string(script->get_source_code());
+
+	// 与 GDScript saver 一致：按需在保存后触发重载，编辑器才会刷新 Inspector 的导出属性；
+	// 缺这一步，修改 .as 后必须重开工程才能看到新属性。
+	if (ScriptServer::is_reload_scripts_on_save_enabled()) {
+		ASScriptLanguage::get_singleton()->reload_tool_script(script, true);
+	}
 	return OK;
 }
 

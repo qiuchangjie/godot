@@ -49,7 +49,9 @@ void as_script_rejects_empty_and_whitespace_source();
 void as_script_rejects_directive_after_line_10();
 void as_script_clear_resets_source_code();
 void as_script_loads_through_resource_loader_from_user_path();
+void as_script_loader_ignores_cache_without_cyclic_conflict();
 void as_script_reload_recompiles_from_updated_source();
+void as_script_hot_reload_reattaches_and_refreshes();
 
 // 本头会被两处 include：tests/test_main.cpp（用于注册用例）与同目录的
 // test_angelscript_script.cpp（只为拿到上面的辅助函数声明）。实现方必须先定义
@@ -101,8 +103,16 @@ TEST_CASE("[AngelScript] ASScript loads through ResourceLoader from user://") {
 	as_script_loads_through_resource_loader_from_user_path();
 }
 
+TEST_CASE("[AngelScript] ASScript CACHE_MODE_IGNORE reload ignores existing cache entry") {
+	as_script_loader_ignores_cache_without_cyclic_conflict();
+}
+
 TEST_CASE("[AngelScript] ASScript reload() recompiles from updated source") {
 	as_script_reload_recompiles_from_updated_source();
+}
+
+TEST_CASE("[AngelScript] ASScript hot reload reattaches instances and restores state") {
+	as_script_hot_reload_reattaches_and_refreshes();
 }
 
 #endif // ANGELSCRIPT_SCRIPT_TESTS_IMPL

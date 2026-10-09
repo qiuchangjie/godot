@@ -31,8 +31,10 @@
 #include "as_script_language.h"
 
 #include "as_engine.h"
+#include "as_script.h"
 
 #include "core/config/project_settings.h"
+#include "core/object/class_db.h"
 
 ASScriptLanguage *ASScriptLanguage::singleton = nullptr;
 
@@ -124,6 +126,23 @@ String ASScriptLanguage::make_function(const String &p_class, const String &p_na
 	return String();
 }
 
+Ref<Script> ASScriptLanguage::make_template(const String &p_template, const String &p_class_name, const String &p_base_class_name) const {
+	Ref<ASScript> scr;
+	scr.instantiate();
+
+	// 本语言未开启编辑器模板系统（is_using_templates() 为 false，对话框传入的 p_template
+	// 恒为空），因此这里按模块约定合成最小可用骨架：`// godot_base:` 基类指令 +
+	// 与文件名同名的空脚本类。缺了这一步，基类返回的空引用会让
+	// ScriptCreateDialog::_create_new() 在 scr->set_path() 处空指针崩溃。
+	String base = p_base_class_name.strip_edges().unquote();
+	if (base.is_empty() || !ClassDB::class_exists(base)) {
+		base = "Object";
+	}
+
+	scr->set_source_code(vformat("// godot_base: %s\n\nclass %s {\n}\n", base, p_class_name.strip_edges()));
+	return scr;
+}
+
 String ASScriptLanguage::debug_get_error() const {
 	return String();
 }
@@ -161,9 +180,24 @@ void ASScriptLanguage::reload_all_scripts() {
 }
 
 void ASScriptLanguage::reload_scripts(const Array &p_scripts, bool p_soft_reload) {
+#ifdef TOOLS_ENABLED
+	for (int i = 0; i < p_scripts.size(); i++) {
+		Object *obj = p_scripts[i];
+		Ref<ASScript> scr = Object::cast_to<ASScript>(obj);
+		if (scr.is_null()) {
+			continue;
+		}
+		// 与 GDScript 不同，soft/hard 都必须摘除实例：AS 实例持有模块内的
+		// asIScriptObject，重编译会 DiscardModule，不先摘除即悬垂。
+		scr->reload_with_instances(p_soft_reload);
+	}
+#endif
 }
 
 void ASScriptLanguage::reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) {
+	Array scripts;
+	scripts.push_back(p_script);
+	reload_scripts(scripts, p_soft_reload);
 }
 
 void ASScriptLanguage::get_recognized_extensions(List<String> *p_extensions) const {

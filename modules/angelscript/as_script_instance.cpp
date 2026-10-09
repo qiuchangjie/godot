@@ -123,9 +123,19 @@ ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owne
 		object->AddRef();
 	}
 	context->Unprepare();
+
+#ifdef TOOLS_ENABLED
+	// 注册到脚本：编辑器热重载需枚举所有承载对象，先摘除再重编译，避免模块被丢弃后对象悬垂。
+	script->_add_instance(this);
+#endif
 }
 
 ASScriptInstance::~ASScriptInstance() {
+#ifdef TOOLS_ENABLED
+	if (script.is_valid()) {
+		script->_remove_instance(this);
+	}
+#endif
 	if (object != nullptr) {
 		object->Release();
 		object = nullptr;

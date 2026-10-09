@@ -367,8 +367,93 @@ Error ASScript::reload(bool p_keep_state) {
 	if (!compile_source(source_code, get_path().is_empty() ? module_name : get_path(), &error)) {
 		return ERR_PARSE_ERROR;
 	}
+#ifdef TOOLS_ENABLED
+	// 重编译后属性集合可能变化：刷新占位实例，使 Inspector 立即显示新属性（等价 GDScript update_exports）。
+	update_placeholders();
+#endif
 	return OK;
 }
+
+#ifdef TOOLS_ENABLED
+void ASScript::_add_instance(ASScriptInstance *p_instance) {
+	instances.insert(p_instance);
+}
+
+void ASScript::_remove_instance(ASScriptInstance *p_instance) {
+	instances.erase(p_instance);
+}
+
+void ASScript::update_placeholders() {
+	if (placeholders.is_empty()) {
+		return;
+	}
+	List<PropertyInfo> props;
+	get_script_property_list(&props);
+	HashMap<StringName, Variant> values;
+	for (PlaceHolderScriptInstance *E : placeholders) {
+		E->update(props, values);
+	}
+}
+
+void ASScript::reload_with_instances(bool p_keep_state) {
+	// 保存-重编译-重挂：必须在重编译前摘除所有实例与占位实例。reload() 内部 clear() 会
+	// DiscardModule()，若仍有活跃的 asIScriptObject 指向该模块，重挂之前就已悬垂（UAF）。
+	HashMap<ObjectID, List<Pair<StringName, Variant>>> saved_states;
+
+	Vector<ASScriptInstance *> live_instances;
+	live_instances.reserve(instances.size());
+	for (ASScriptInstance *E : instances) {
+		live_instances.push_back(E);
+	}
+	for (ASScriptInstance *E : live_instances) {
+		Object *owner = E->get_owner();
+		if (owner == nullptr) {
+			continue;
+		}
+		E->get_property_state(saved_states[owner->get_instance_id()]);
+		// 摘除会析构实例并经 _remove_instance 回改集合，因此遍历的是上面的快照。
+		owner->set_script(Variant());
+	}
+
+	Vector<PlaceHolderScriptInstance *> live_placeholders;
+	live_placeholders.reserve(placeholders.size());
+	for (PlaceHolderScriptInstance *E : placeholders) {
+		live_placeholders.push_back(E);
+	}
+	for (PlaceHolderScriptInstance *E : live_placeholders) {
+		Object *owner = E->get_owner();
+		if (owner == nullptr || owner->get_script_instance() != E) {
+			continue;
+		}
+		E->get_property_state(saved_states[owner->get_instance_id()]);
+		owner->set_script(Variant());
+	}
+
+	reload(p_keep_state);
+
+	for (KeyValue<ObjectID, List<Pair<StringName, Variant>>> &E : saved_states) {
+		Object *obj = ObjectDB::get_instance(E.key);
+		if (obj == nullptr) {
+			continue;
+		}
+		obj->set_script(Ref<Script>(this));
+		ScriptInstance *si = obj->get_script_instance();
+		if (si == nullptr) {
+			continue;
+		}
+		if (si->is_placeholder()) {
+			PlaceHolderScriptInstance *ph = static_cast<PlaceHolderScriptInstance *>(si);
+			for (const Pair<StringName, Variant> &G : E.value) {
+				ph->property_set_fallback(G.first, G.second);
+			}
+		} else {
+			for (const Pair<StringName, Variant> &G : E.value) {
+				si->set(G.first, G.second);
+			}
+		}
+	}
+}
+#endif
 
 bool ASScript::has_method(const StringName &p_method) const {
 	// `signal_<name>` 是信号声明约定，不作为普通方法暴露（与 has_script_signal 分工）。
@@ -566,3 +651,27 @@ ScriptInstance *ASScript::instance_create(Object *p_this) {
 	}
 	return instance;
 }
+
+PlaceHolderScriptInstance *ASScript::placeholder_instance_create(Object *p_this) {
+#ifdef TOOLS_ENABLED
+	// 编辑器里脚本尚不可实例化时（例如刚由「新建脚本」创建、还未编译成功），
+	// Object::set_script() 会退而请求占位实例。这里若返回 nullptr，节点就拿不到任何
+	// ScriptInstance，表现为「挂不上脚本、Inspector 的 Script 栏为空」。
+	PlaceHolderScriptInstance *si = memnew(PlaceHolderScriptInstance(ASScriptLanguage::get_singleton(), Ref<Script>(this), p_this));
+	placeholders.insert(si);
+	// 脚本若已编译，属性列表可用；未编译时为空列表，update 也能安全接受。
+	List<PropertyInfo> props;
+	get_script_property_list(&props);
+	HashMap<StringName, Variant> values;
+	si->update(props, values);
+	return si;
+#else
+	return nullptr;
+#endif
+}
+
+#ifdef TOOLS_ENABLED
+void ASScript::_placeholder_erased(PlaceHolderScriptInstance *p_placeholder) {
+	placeholders.erase(p_placeholder);
+}
+#endif
