@@ -178,7 +178,7 @@ Vector<ASToken> ASHighlighterLexer::tokenize(const String &p_line, bool p_in_blo
 			continue;
 		}
 
-		// 6) 标识符 / 关键字 / 基本类型。
+		// 6) 标识符 / 关键字 / 基本类型 / 引擎类型 / 用户类型 / 函数 / 成员。
 		if (_is_ident_start(c)) {
 			int j = i + 1;
 			while (j < length && _is_ident_continue(p_line[j])) {
@@ -190,6 +190,22 @@ Vector<ASToken> ASHighlighterLexer::tokenize(const String &p_line, bool p_in_blo
 				type = ASTokenType::KEYWORD;
 			} else if (as_builtin_types.has(word)) {
 				type = ASTokenType::BUILTIN_TYPE;
+			} else if (p_engine_types.has(word)) {
+				type = ASTokenType::ENGINE_TYPE;
+			} else if (p_user_types.has(word)) {
+				type = ASTokenType::USER_TYPE;
+			} else if (i > 0 && p_line[i - 1] == '.') {
+				// 前接 '.' → 成员访问；放在类型判定之后，保证类型名优先于成员判定。
+				type = ASTokenType::MEMBER;
+			} else {
+				// 后随（可跨空白）'(' → 函数调用。
+				int k = j;
+				while (k < length && (p_line[k] == ' ' || p_line[k] == '\t')) {
+					k++;
+				}
+				if (k < length && p_line[k] == '(') {
+					type = ASTokenType::FUNCTION;
+				}
 			}
 			tokens.push_back({ i, j, type });
 			i = j;
