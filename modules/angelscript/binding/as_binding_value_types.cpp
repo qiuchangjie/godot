@@ -620,6 +620,14 @@ static const ASGodotStringObject *string_slot(asIScriptGeneric *p_gen, int p_ind
 	return *(const ASGodotStringObject *const *)arg; // 变量：存储地址解一次。
 }
 
+String ASBindingValueTypes::string_from_slot(const void *p_slot) {
+	if (p_slot == nullptr) {
+		return String();
+	}
+	const ASGodotStringObject *o = *(const ASGodotStringObject *const *)p_slot;
+	return o != nullptr ? o->str : String();
+}
+
 void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 	asIScriptFunction *func = p_gen->GetFunction();
 	ASValueBinding *b = func ? (ASValueBinding *)func->GetUserData() : nullptr;

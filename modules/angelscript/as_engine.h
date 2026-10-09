@@ -56,6 +56,12 @@ class ASEngine {
 
 	static void _message_callback(const asSMessageInfo *p_msg, void *p_param);
 
+	// AS 内部有一类上下文不经 create_context()：脚本全局变量初始化与脚本对象的
+	// 拷贝构造 / opEquals / GC 枚举都走 asIScriptEngine::RequestContext()。接管这对
+	// 回调，才能让这些路径上的异常也装上调试器回调（否则它们对调试器完全不可见）。
+	static asIScriptContext *_request_context(asIScriptEngine *p_engine, void *p_param);
+	static void _return_context(asIScriptEngine *p_engine, asIScriptContext *p_ctx, void *p_param);
+
 	// 注册阶段一的最小内建 API（当前只有 as_log_int），由 ensure_initialized() 调用一次。
 	void _register_builtins();
 	// 内省 ClassDB 并注册绑定层（值类型 / 对象类型 / 枚举 / @GlobalScope 工具函数）。

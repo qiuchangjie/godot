@@ -137,12 +137,53 @@ Variant find_local(const String &p_name) {
 	return Variant();
 }
 
+// 名字是否出现在局部变量表里。与 find_local 不同：它能区分「没有这个名字」
+// 和「有这个名字但值恰好为空 Variant」。
+bool has_local(const String &p_name) {
+	for (const List<String>::Element *n = g_local_names.front(); n != nullptr; n = n->next()) {
+		if (n->get() == p_name) {
+			return true;
+		}
+	}
+	return false;
+}
+
 int g_locals_max_depth = -1;
 
 void capture_locals_with_depth(asIScriptContext *p_ctx) {
 	g_local_names.clear();
 	g_local_values.clear();
 	ASDebugger::get_stack_level_locals(p_ctx, 0, &g_local_names, &g_local_values, -1, g_locals_max_depth);
+}
+
+List<String> g_member_names;
+List<Variant> g_member_values;
+
+void capture_members(asIScriptContext *p_ctx) {
+	g_member_names.clear();
+	g_member_values.clear();
+	ASDebugger::get_stack_level_members(p_ctx, 0, &g_member_names, &g_member_values, -1, -1);
+}
+
+Variant find_member(const String &p_name) {
+	const List<String>::Element *n = g_member_names.front();
+	const List<Variant>::Element *v = g_member_values.front();
+	while (n != nullptr && v != nullptr) {
+		if (n->get() == p_name) {
+			return v->get();
+		}
+		n = n->next();
+		v = v->next();
+	}
+	return Variant();
+}
+
+// 表达式求值的第二趟（查 this 成员）只有在类方法帧里才会命中，单独捕获。
+String g_member_expression;
+
+void capture_member_expression(asIScriptContext *p_ctx) {
+	capture_members(p_ctx);
+	g_member_expression = ASDebugger::parse_stack_level_expression(p_ctx, 0, "tag");
 }
 
 // 非空时在解码之前把它 free 掉，用来模拟「调试器查看变量时对象已经没了」。
@@ -277,8 +318,8 @@ void test_skips_caught_exception() {
 }
 
 void test_reads_locals() {
-	// 末尾那个 late 变量在抛异常时还没进入作用域，GetAddressOfVar 会返回 nullptr。
-	// 这里顺带确认解码器跳过它而不是解引用空指针崩掉。
+	// late 在抛异常时还没执行到声明处。AS 对标量的 GetAddressOfVar 照样返回有效栈地址，
+	// 所以必须靠 IsVarInScope 拦住，否则面板上会出现一个带垃圾值的 late。
 	const String source =
 			"void probe() {\n"
 			"	int a = 42;\n"
@@ -300,6 +341,11 @@ void test_reads_locals() {
 	CHECK(find_local("b") == Variant(1.5));
 	CHECK(find_local("c") == Variant(true));
 	CHECK(g_local_names.size() == g_local_values.size());
+
+	// 未进入作用域的变量不得出现在列表里。
+	CHECK_FALSE(has_local("late"));
+	// 编译器临时变量是无名的，它们不是用户写的变量，不该进面板。
+	CHECK_FALSE(has_local(String()));
 }
 
 void test_decodes_bound_value_type() {
@@ -323,6 +369,26 @@ void test_decodes_bound_value_type() {
 		return;
 	}
 	CHECK(Vector2(got) == Vector2(3, 4));
+}
+
+void test_decodes_native_string() {
+	// AS 原生 string 是唯一不以 Variant 为存储的绑定值类型：槽里装的是驻留工厂对象的
+	// 指针。走通用值类型路径会把 8 字节指针当 Variant 读，必须有专项分支。
+	const String source =
+			"void probe() {\n"
+			"	string s = \"hi\";\n"
+			"	int d = 0;\n"
+			"	int boom = 1 / d;\n"
+			"}\n";
+
+	String module_name;
+	const bool ran = run_until_exception(source, "probe", capture_locals, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+
+	CHECK(find_local("s") == Variant("hi"));
 }
 
 void test_expands_script_class() {
@@ -452,6 +518,117 @@ void test_handles_invalid_level() {
 	if (!ran) {
 		return;
 	}
+}
+
+void test_reads_this_members() {
+	// 异常抛在类方法里，所以层 0 就是那个方法帧，GetThisPointer 能拿到 this。
+	// holder.self 指回自身，验证 seen.insert(self) 真的挡住了自环。
+	const String source =
+			"class Holder {\n"
+			"	int count;\n"
+			"	double ratio;\n"
+			"	int tag;\n"
+			"	Holder @self;\n"
+			"	void boom() {\n"
+			"		int d = 0;\n"
+			"		int x = 1 / d;\n"
+			"	}\n"
+			"}\n"
+			"void probe() {\n"
+			"	Holder h;\n"
+			"	h.count = 3;\n"
+			"	h.ratio = 0.25;\n"
+			"	h.tag = 99;\n"
+			"	@h.self = h;\n"
+			"	h.boom();\n"
+			"}\n";
+
+	g_member_expression = String();
+	String module_name;
+	const bool ran = run_until_exception(source, "probe", capture_member_expression, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+
+	CHECK(g_member_names.size() == g_member_values.size());
+	CHECK(find_member("count") == Variant(3));
+	CHECK(find_member("ratio") == Variant(0.25));
+	CHECK(find_member("self") == Variant("<cycle>"));
+	// 表达式求值的第二趟：局部变量里没有 tag，必须从 this 成员里查到。
+	CHECK(g_member_expression == "99");
+}
+
+void test_exception_flag_is_per_context() {
+	// 复现「脏标志跨上下文泄漏」：ASScriptInstance 的构造期异常不经 call_function，
+	// 标志置位后无人消费；若消费端不比对上下文，下一次别的上下文执行失败时
+	// 就会被这面陈旧的旗子吃掉本该打印的 ERR_PRINT。
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as != nullptr);
+	REQUIRE(as->ensure_initialized());
+	if (as == nullptr || !as->ensure_initialized()) {
+		return;
+	}
+
+	asIScriptContext *producer = as->get_engine()->CreateContext();
+	asIScriptContext *other = as->get_engine()->CreateContext();
+	REQUIRE(producer != nullptr);
+	REQUIRE(other != nullptr);
+	if (producer == nullptr || other == nullptr) {
+		if (producer != nullptr) {
+			producer->Release();
+		}
+		if (other != nullptr) {
+			other->Release();
+		}
+		return;
+	}
+
+	ASDebugger::mark_exception_reported(producer);
+	// 别的上下文不得认领这面旗子，也不得把它清掉。
+	CHECK_FALSE(ASDebugger::consume_exception_reported(other));
+	// 产生它的上下文认领得到，且只认领一次。
+	CHECK(ASDebugger::consume_exception_reported(producer));
+	CHECK_FALSE(ASDebugger::consume_exception_reported(producer));
+
+	producer->Release();
+	other->Release();
+}
+
+void test_attaches_engine_internal_contexts() {
+	// AS 内部有一整类上下文不经 ASEngine::create_context()：脚本全局变量初始化
+	// （asCModule::InitGlobalProp）与脚本对象的拷贝构造 / opEquals / GC 枚举都走
+	// asIScriptEngine::RequestContext()。不接管它，这些路径上的异常对调试器完全不可见。
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as != nullptr);
+	REQUIRE(as->ensure_initialized());
+	if (as == nullptr || !as->ensure_initialized()) {
+		return;
+	}
+
+	asIScriptEngine *engine = as->get_engine();
+	REQUIRE(engine != nullptr);
+	if (engine == nullptr) {
+		return;
+	}
+
+	asIScriptContext *ctx = engine->RequestContext();
+	REQUIRE(ctx != nullptr);
+	if (ctx == nullptr) {
+		return;
+	}
+	CHECK(ASDebugger::is_attached(ctx));
+	engine->ReturnContext(ctx);
+
+	// 自建上下文没有经过任何装配入口，必须是未装配的——否则上面那条 CHECK
+	// 可能只是因为谓词恒真而碰巧通过。
+	asIScriptContext *bare = engine->CreateContext();
+	REQUIRE(bare != nullptr);
+	if (bare == nullptr) {
+		return;
+	}
+	CHECK_FALSE(ASDebugger::is_attached(bare));
+	bare->Release();
 }
 
 } // namespace TestAngelScriptDebugger

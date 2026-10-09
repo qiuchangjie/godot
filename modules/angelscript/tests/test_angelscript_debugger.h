@@ -38,9 +38,13 @@ void test_builds_stack_info();
 void test_skips_caught_exception();
 void test_reads_locals();
 void test_decodes_bound_value_type();
+void test_decodes_native_string();
 void test_expands_script_class();
 void test_decodes_object_handle();
 void test_handles_invalid_level();
+void test_reads_this_members();
+void test_exception_flag_is_per_context();
+void test_attaches_engine_internal_contexts();
 
 #ifndef ANGELSCRIPT_DEBUGGER_TESTS_IMPL
 
@@ -60,6 +64,10 @@ TEST_CASE("[AngelScript] 调试器能解码绑定值类型局部变量") {
 	test_decodes_bound_value_type();
 }
 
+TEST_CASE("[AngelScript] 调试器能解码 AS 原生 string 局部变量") {
+	test_decodes_native_string();
+}
+
 TEST_CASE("[AngelScript] 调试器能递归展开脚本类并挡住环与深度") {
 	test_expands_script_class();
 }
@@ -70,6 +78,18 @@ TEST_CASE("[AngelScript] 调试器解码 Godot 对象句柄且容忍对象已销
 
 TEST_CASE("[AngelScript] 调试器对失效输入返回安全默认值") {
 	test_handles_invalid_level();
+}
+
+TEST_CASE("[AngelScript] 调试器能读出类方法帧的 this 成员") {
+	test_reads_this_members();
+}
+
+TEST_CASE("[AngelScript] 异常上报标志只对产生它的上下文生效") {
+	test_exception_flag_is_per_context();
+}
+
+TEST_CASE("[AngelScript] AS 内部请求的上下文同样装上异常回调") {
+	test_attaches_engine_internal_contexts();
 }
 
 #endif

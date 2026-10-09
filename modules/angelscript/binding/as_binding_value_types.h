@@ -53,4 +53,10 @@ public:
 
 	// asCALL_GENERIC 跳板：内建方法/成员/运算符/索引共用；具体行为由 GetUserData 的绑定记录决定。
 	static void generic_value_call(asIScriptGeneric *p_gen);
+
+	// 从 AS `string` 的对象槽里取出字符串内容。
+	// `string` 是唯一不以 Variant 为存储的绑定值类型：它按 sizeof(void *) 注册，
+	// 槽里装的是驻留工厂对象的指针。槽内容对 .cpp 之外不透明，调试器要读它就只能走这里。
+	// p_slot 是对象槽地址（即 AS 的 this / GetAddressOfVar 结果），不是工厂指针本身。
+	static String string_from_slot(const void *p_slot);
 };
