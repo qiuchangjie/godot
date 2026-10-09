@@ -31,6 +31,8 @@
 #pragma once
 
 #include "core/object/script_language.h"
+#include "core/os/mutex.h"
+#include "core/templates/hash_map.h"
 
 class ASScriptLanguage : public ScriptLanguage {
 	static ASScriptLanguage *singleton;
@@ -86,6 +88,26 @@ public:
 	virtual void profiling_set_save_native_calls(bool p_enable) override {}
 	virtual int profiling_get_accumulated_data(ProfilingInfo *p_info_arr, int p_info_max) override;
 	virtual int profiling_get_frame_data(ProfilingInfo *p_info_arr, int p_info_max) override;
+
+	// 性能采样内部接口。恒声明以避免 debug/release 的类布局差异；
+	// release 下 is_profiling() 恒 false、profile_function() 空操作。
+	bool is_profiling() const;
+	void profile_function(const StringName &p_signature, uint64_t p_usec);
+
+private:
+	// 性能采样条目（时间单位：微秒）。仅在 DEBUG_ENABLED 下被写入。
+	struct ProfileEntry {
+		uint64_t call_count = 0;
+		uint64_t total_time = 0;
+		uint64_t frame_call_count = 0;
+		uint64_t frame_total_time = 0;
+		uint64_t last_frame_call_count = 0;
+		uint64_t last_frame_total_time = 0;
+	};
+
+	bool profiling = false;
+	Mutex profile_mutex;
+	HashMap<StringName, ProfileEntry> profile_data;
 };
 
 // 语言单例的全局实例指针，供 register_types.cpp 与测试使用（定义在 as_script_language.cpp）。
