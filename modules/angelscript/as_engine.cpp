@@ -403,11 +403,18 @@ int ASEngine::get_gc_count() const {
 	return gc_count;
 }
 
-// 构造编辑器 Profiler 面板展示用的签名：与 GDScript 一致用 "::" 分段、末段为函数名。
-// 全局/静态函数为 "<module>::<func>"，对象方法为 "<module>::<Class>.<func>"。
+// 构造编辑器 Profiler 面板展示用的签名。面板按 "<path>::<line>::<func>" 三段解析
+// （script_editor_debugger.cpp:872-881），段数不对会落进空分支，导致行名空白、
+// 源码跳转失效，所以必须与 GDScript 一样补上声明行号这一段。
+// 全局/静态函数为 "<module>::<line>::<func>"，对象方法为 "<module>::<line>::<Class>.<func>"。
 static StringName _make_profile_signature(asIScriptFunction *p_func) {
 	const char *module_name = p_func->GetModuleName();
 	String signature = (module_name != nullptr && module_name[0] != '\0') ? String(module_name) : String("<module>");
+
+	// GetDeclaredAt 对非脚本函数返回 asNOT_SUPPORTED 并把 row 置 0，可安全直接取用。
+	int row = 0;
+	p_func->GetDeclaredAt(nullptr, &row, nullptr);
+	signature += "::" + itos(row);
 
 	const char *class_name = nullptr;
 	asITypeInfo *type_info = p_func->GetObjectType();
@@ -445,11 +452,16 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 		profile_start = OS::get_singleton()->get_ticks_usec();
 	}
 	// 统一收尾：嵌套调用的清理交给 PopState()，非嵌套维持原行为（Unprepare）。
-	// 采样在此写回，因此成功/失败/参数错误等所有退出分支都会被采集。
+	// 采样在此写回，因此所有已进入执行阶段的退出分支都会被采集
+	// （前置的 ERR_FAIL_* 与 PushState 失败发生在采样起点之前，脚本未执行，不采样）。
 	auto finish = [&](Error p_result) {
 		if (profile_start != 0) {
+			// 必须先取完耗时再构造签名：StringName 构造要拼 String 并加全局表锁，
+			// 开销达微秒级；而函数实参求值顺序未定义，交给编译器排就可能把采样器
+			// 自身开销计进被测函数（小函数会被放大数倍）。
 			// 只计脚本执行本身（Prepare + 参数编组 + Execute），清理不计入。
-			profile_lang->profile_function(_make_profile_signature(p_func), OS::get_singleton()->get_ticks_usec() - profile_start);
+			const uint64_t elapsed = OS::get_singleton()->get_ticks_usec() - profile_start;
+			profile_lang->profile_function(_make_profile_signature(p_func), elapsed);
 		}
 		if (nested) {
 			p_context->PopState();

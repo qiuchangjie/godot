@@ -89,13 +89,16 @@ public:
 	virtual int profiling_get_accumulated_data(ProfilingInfo *p_info_arr, int p_info_max) override;
 	virtual int profiling_get_frame_data(ProfilingInfo *p_info_arr, int p_info_max) override;
 
-	// 性能采样内部接口。恒声明以避免 debug/release 的类布局差异；
+	// 性能采样内部接口。恒声明以保持调用点无需条件编译；
 	// release 下 is_profiling() 恒 false、profile_function() 空操作。
 	bool is_profiling() const;
 	void profile_function(const StringName &p_signature, uint64_t p_usec);
 
 private:
-	// 性能采样条目（时间单位：微秒）。仅在 DEBUG_ENABLED 下被写入。
+#ifdef DEBUG_ENABLED
+	// 性能采样条目（时间单位：微秒）。与 GDScript 一致只在调试构建中存在：
+	// release 下这些成员无任何读写，保留会触发 clang 的 -Wunused-private-field，
+	// 并让每个实例白白构造一个 Mutex 与 HashMap。
 	struct ProfileEntry {
 		uint64_t call_count = 0;
 		uint64_t total_time = 0;
@@ -108,6 +111,7 @@ private:
 	bool profiling = false;
 	Mutex profile_mutex;
 	HashMap<StringName, ProfileEntry> profile_data;
+#endif
 };
 
 // 语言单例的全局实例指针，供 register_types.cpp 与测试使用（定义在 as_script_language.cpp）。
