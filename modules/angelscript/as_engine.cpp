@@ -64,6 +64,26 @@ void ASEngine::_message_callback(const asSMessageInfo *p_msg, void *p_param) {
 	}
 }
 
+asIScriptContext *ASEngine::_request_context(asIScriptEngine *p_engine, void *p_param) {
+	if (p_engine == nullptr) {
+		return nullptr;
+	}
+	asIScriptContext *ctx = p_engine->CreateContext();
+	if (ctx != nullptr) {
+		ASDebugger::attach(ctx);
+	}
+	return ctx;
+}
+
+void ASEngine::_return_context(asIScriptEngine *p_engine, asIScriptContext *p_ctx, void *p_param) {
+	if (p_ctx == nullptr) {
+		return;
+	}
+	// 不做上下文池化：AS 内部借还很稀疏，缓存收益不抵「上下文被复用时残留状态」的风险。
+	p_ctx->Unprepare();
+	p_ctx->Release();
+}
+
 // 内建函数一律走泛型调用约定（asCALL_GENERIC）：设计 §3 约定绑定层统一使用泛型调用，
 // 内建 API 先行遵守，避免 M2 绑定层出现两套调用约定。
 static void _as_log_int(asIScriptGeneric *p_generic) {
@@ -170,6 +190,7 @@ bool ASEngine::ensure_initialized() {
 	}
 
 	engine->SetMessageCallback(asFUNCTION(_message_callback), this, asCALL_CDECL);
+	engine->SetContextCallbacks(_request_context, _return_context, nullptr);
 
 	_register_builtins();
 
@@ -533,7 +554,7 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 	if (executed != asEXECUTION_FINISHED) {
 		// 调试器已经以「富信息 + 调用栈」的形式上报过了，再打一条干巴巴的 ERR_PRINT
 		// 会让错误面板出现重复条目。非调试运行时 consume 恒为 false，行为与以前完全一致。
-		if (!ASDebugger::consume_exception_reported()) {
+		if (!ASDebugger::consume_exception_reported(p_context)) {
 			// 静默吞掉异常会让脚本错误在宿主侧完全不可见（callp 只把它翻译成一个泛化错误码）。
 			const char *exception = p_context->GetExceptionString();
 			const char *section = nullptr;

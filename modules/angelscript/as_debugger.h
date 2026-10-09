@@ -50,8 +50,13 @@ class asIScriptEngine;
 // 异常回调内直接调用——保证被测代码就是被用的代码。
 class ASDebugger {
 public:
-	// 唯一的回调安装入口。所有上下文创建后必须经此装配（见 ASEngine::create_context）。
+	// 唯一的回调安装入口。本模块自己创建的上下文经 ASEngine::create_context 装配；
+	// AS 内部经 RequestContext() 创建的上下文由 ASEngine 注册的上下文回调兜住。
 	static void attach(asIScriptContext *p_ctx);
+
+	// 该上下文是否已装上异常回调。装配是一个不变量，所以它必须可被断言。
+	static bool is_attached(asIScriptContext *p_ctx);
+
 	static void on_exception(asIScriptContext *p_ctx, void *p_user);
 
 	// 这个异常是否值得打断执行：脚本自己 try/catch 接住的异常不是故障。
@@ -61,7 +66,11 @@ public:
 
 	// 本次异常是否已由调试器以富信息形式上报；读后清零。
 	// call_function 用它决定要不要再打那条干巴巴的 ERR_PRINT，避免同一异常出现两条。
-	static bool consume_exception_reported();
+	// 标志按上下文记录而非一个裸 bool：上报点（on_exception）与消费点（call_function）
+	// 并非一一对应——ASScriptInstance 的构造期异常只置位、永不消费。若不比对上下文，
+	// 这面陈旧的旗子会把后续别处合法的 ERR_PRINT 静默吃掉。
+	static void mark_exception_reported(asIScriptContext *p_ctx);
+	static bool consume_exception_reported(asIScriptContext *p_ctx);
 
 	static asIScriptContext *get_break_context();
 	static String get_error();

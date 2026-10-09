@@ -34,6 +34,7 @@
 
 #include "binding/as_binding_decl.h"
 #include "binding/as_binding_object.h"
+#include "binding/as_binding_value_types.h"
 
 #include "core/debugger/engine_debugger.h"
 #include "core/debugger/script_debugger.h"
@@ -49,10 +50,15 @@ namespace {
 // thread_local 正好对齐这一事实，因此不需要加锁。
 thread_local asIScriptContext *g_break_context = nullptr;
 thread_local String g_break_error;
-thread_local bool g_exception_reported = false;
+thread_local asIScriptContext *g_exception_reported_ctx = nullptr;
 
 // 递归展开的默认深度上限。调用方（Godot 调试器）传入 >= 0 的值时以调用方为准。
 constexpr int DEFAULT_MAX_DEPTH = 4;
+
+// 装配标记在上下文 user data 上的槽位。AS 没有「查询已装回调」的 API，
+// 而装配是个必须可断言的不变量，所以用一个专属 user data 槽位自己记。
+// 取值任意，只要不与模块内其它 user data 使用者冲突；目前本模块无其它使用者。
+constexpr asPWORD ATTACHED_USER_DATA_TYPE = 0x4153'4442; // 'ASDB'
 
 bool is_level_valid(asIScriptContext *p_ctx, int p_level) {
 	return p_ctx != nullptr && p_level >= 0 && p_level < (int)p_ctx->GetCallstackSize();
@@ -68,6 +74,11 @@ void ASDebugger::attach(asIScriptContext *p_ctx) {
 	// is_active() 判定。这样就避开了「ASScriptInstance 的上下文在实例构造时就创建、
 	// 而调试器可能稍后才激活」的时序耦合。
 	p_ctx->SetExceptionCallback(asFUNCTION(ASDebugger::on_exception), nullptr, asCALL_CDECL);
+	p_ctx->SetUserData((void *)1, ATTACHED_USER_DATA_TYPE);
+}
+
+bool ASDebugger::is_attached(asIScriptContext *p_ctx) {
+	return p_ctx != nullptr && p_ctx->GetUserData(ATTACHED_USER_DATA_TYPE) != nullptr;
 }
 
 bool ASDebugger::is_unhandled_exception(asIScriptContext *p_ctx) {
@@ -100,7 +111,7 @@ void ASDebugger::on_exception(asIScriptContext *p_ctx, void *p_user) {
 
 	EngineDebugger::get_script_debugger()->send_error(func, file, line,
 			"AngelScript Error", g_break_error, true, ERR_HANDLER_SCRIPT, stack);
-	g_exception_reported = true;
+	g_exception_reported_ctx = p_ctx;
 
 	if (!reentrant) {
 		// p_can_continue = false：AS 异常后执行无法恢复，没有「继续」的语义。
@@ -111,10 +122,16 @@ void ASDebugger::on_exception(asIScriptContext *p_ctx, void *p_user) {
 	g_break_error = prev_error;
 }
 
-bool ASDebugger::consume_exception_reported() {
-	const bool reported = g_exception_reported;
-	g_exception_reported = false;
-	return reported;
+void ASDebugger::mark_exception_reported(asIScriptContext *p_ctx) {
+	g_exception_reported_ctx = p_ctx;
+}
+
+bool ASDebugger::consume_exception_reported(asIScriptContext *p_ctx) {
+	if (p_ctx == nullptr || g_exception_reported_ctx != p_ctx) {
+		return false;
+	}
+	g_exception_reported_ctx = nullptr;
+	return true;
 }
 
 asIScriptContext *ASDebugger::get_break_context() {
@@ -240,8 +257,16 @@ Variant ASDebugger::decode_var(void *p_addr, int p_type_id, asIScriptEngine *p_e
 	const bool is_handle = (p_type_id & asTYPEID_OBJHANDLE) != 0;
 	const bool is_script_object = (p_type_id & asTYPEID_SCRIPTOBJECT) != 0;
 
+	// AS 原生 string 是值类型里唯一的存储例外：它按 sizeof(void *) 注册
+	// （as_binding_value_types.cpp:595），槽里装的是驻留工厂对象的指针，不是 Variant。
+	// 必须排在通用值类型分支之前，否则会把 8 字节指针当 Variant 读。
+	if (!is_handle && !is_script_object && type_name == "string") {
+		return ASBindingValueTypes::string_from_slot(p_addr);
+	}
+
 	// 绑定值类型：34 个内建类型与 Variant 自身在 AS 侧都是独立的 asOBJ_VALUE，
-	// 但底层存储统一就是一块 Godot Variant（as_binding_value_types.h:40-43）。
+	// 它们的底层存储就是一块 Godot Variant（as_binding_value_types.cpp:591-594）。
+	// 注意这里的「统一」不含上面的 string。
 	if (!is_handle && !is_script_object && ASBindingDecl::as_name_to_variant_type(type_name) != Variant::NIL) {
 		return *reinterpret_cast<const Variant *>(p_addr);
 	}
@@ -338,13 +363,25 @@ void ASDebugger::get_stack_level_locals(asIScriptContext *p_ctx, int p_level, Li
 			continue;
 		}
 		void *addr = p_ctx->GetAddressOfVar((asUINT)i, (asUINT)p_level);
-		// 地址为空说明变量还没进入作用域，这时解引用必崩——直接跳过。
+		// 地址为空说明这是一个尚未构造的栈上值类型对象，解引用必崩——直接跳过。
 		if (addr == nullptr) {
+			continue;
+		}
+		// 名字为空的是编译器临时变量（as_compiler.cpp 的 FinalizeFunction 塞进来的
+		// 保留槽），不是用户写的变量。注意 asCString::AddressOf() 对空串返回的是
+		// 非 nullptr 的 ""，所以必须判首字符而不是判指针。
+		if (name == nullptr || name[0] == '\0') {
+			continue;
+		}
+		// GetAddressOfVar 只对「栈上未构造的值类型」返回 nullptr（as_context.cpp:6076-6094）；
+		// 标量与句柄无论执行到没执行到声明处，都会返回有效栈地址。所以必须再过一道
+		// 作用域判定，否则面板上会出现带垃圾值的变量——调试时显示错值比不显示更有害。
+		if (!p_ctx->IsVarInScope((asUINT)i, (asUINT)p_level)) {
 			continue;
 		}
 
 		HashSet<const void *> seen;
-		p_names->push_back(name != nullptr ? String::utf8(name) : ("<var " + itos(i) + ">"));
+		p_names->push_back(String::utf8(name));
 		p_values->push_back(decode_var(addr, type_id, engine, 0, depth_limit, p_max_subitems, seen));
 	}
 }
