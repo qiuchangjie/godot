@@ -32,6 +32,7 @@
 
 #include "as_host_bridge.h"
 #include "as_script_instance.h"
+#include "as_script_language.h"
 #include "binding/as_binding_decl.h"
 #include "binding/as_binding_error_mapper.h"
 #include "binding/as_binding_lazy.h"
@@ -402,6 +403,27 @@ int ASEngine::get_gc_count() const {
 	return gc_count;
 }
 
+// 构造编辑器 Profiler 面板展示用的签名：与 GDScript 一致用 "::" 分段、末段为函数名。
+// 全局/静态函数为 "<module>::<func>"，对象方法为 "<module>::<Class>.<func>"。
+static StringName _make_profile_signature(asIScriptFunction *p_func) {
+	const char *module_name = p_func->GetModuleName();
+	String signature = (module_name != nullptr && module_name[0] != '\0') ? String(module_name) : String("<module>");
+
+	const char *class_name = nullptr;
+	asITypeInfo *type_info = p_func->GetObjectType();
+	if (type_info != nullptr) {
+		class_name = type_info->GetName();
+	}
+
+	const char *func_name = p_func->GetName();
+	if (class_name != nullptr) {
+		signature += "::" + String(class_name) + "." + String(func_name != nullptr ? func_name : "<anonymous>");
+	} else {
+		signature += "::" + String(func_name != nullptr ? func_name : "<anonymous>");
+	}
+	return StringName(signature);
+}
+
 Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret) {
 	ERR_FAIL_NULL_V(p_context, ERR_INVALID_PARAMETER);
 	ERR_FAIL_NULL_V(p_func, ERR_INVALID_PARAMETER);
@@ -416,8 +438,19 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 	if (nested && p_context->PushState() < 0) {
 		return ERR_CANT_CREATE;
 	}
+	// 采样仅在性能分析器开启时进行：关闭时只多一次指针判空。
+	ASScriptLanguage *profile_lang = ASScriptLanguage::get_singleton();
+	uint64_t profile_start = 0;
+	if (profile_lang != nullptr && profile_lang->is_profiling()) {
+		profile_start = OS::get_singleton()->get_ticks_usec();
+	}
 	// 统一收尾：嵌套调用的清理交给 PopState()，非嵌套维持原行为（Unprepare）。
+	// 采样在此写回，因此成功/失败/参数错误等所有退出分支都会被采集。
 	auto finish = [&](Error p_result) {
+		if (profile_start != 0) {
+			// 只计脚本执行本身（Prepare + 参数编组 + Execute），清理不计入。
+			profile_lang->profile_function(_make_profile_signature(p_func), OS::get_singleton()->get_ticks_usec() - profile_start);
+		}
 		if (nested) {
 			p_context->PopState();
 		} else {

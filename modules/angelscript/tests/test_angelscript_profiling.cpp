@@ -31,6 +31,8 @@
 #include "../as_engine.h"
 #include "../as_script_language.h"
 
+#include <angelscript.h>
+
 #define ANGELSCRIPT_PROFILING_TESTS_IMPL
 #include "test_angelscript_profiling.h"
 
@@ -141,6 +143,53 @@ void as_profiling_frame_snapshot() {
 	CHECK(acc_found.call_count == 2);
 	CHECK(acc_found.total_time == 12);
 	lang->profiling_stop();
+}
+
+void as_profiling_records_real_execution() {
+	ASScriptLanguage *lang = ASScriptLanguage::get_singleton();
+	REQUIRE(lang != nullptr);
+	if (lang == nullptr) {
+		return;
+	}
+
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as != nullptr);
+	if (as == nullptr) {
+		return;
+	}
+	REQUIRE(as->ensure_initialized());
+	if (!as->is_initialized()) {
+		return;
+	}
+
+	String err;
+	REQUIRE(as->compile_module("as_profiling_test", "int main() { return 7; }", &err));
+	asIScriptModule *mod = as->get_engine()->GetModule("as_profiling_test");
+	REQUIRE(mod != nullptr);
+	if (mod == nullptr) {
+		return;
+	}
+	asIScriptFunction *func = mod->GetFunctionByDecl("int main()");
+	REQUIRE(func != nullptr);
+	if (func == nullptr) {
+		return;
+	}
+
+	lang->profiling_start();
+	int result = 0;
+	CHECK(ASEngine::execute(as->get_engine(), func, &result) == OK);
+	lang->profiling_stop();
+	CHECK(result == 7);
+
+	ScriptLanguage::ProfilingInfo info[8];
+	const int count = lang->profiling_get_accumulated_data(info, 8);
+	ScriptLanguage::ProfilingInfo found;
+	const bool has = _find_profile(info, count, "as_profiling_test::main", &found);
+	REQUIRE(has);
+	if (!has) {
+		return;
+	}
+	CHECK(found.call_count == 1);
 }
 
 #endif // DEBUG_ENABLED
