@@ -189,6 +189,18 @@ void as_highlighter_lexer_classifies_identifiers_with_type_precedence() {
 		CHECK(found_member);
 	}
 
+	// 函数优先于成员：obj.method() 里的方法是函数调用（与 spec / GDScript 观感一致）。
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("obj.method()", false, engine_types, user_types, out);
+		bool found_function = false;
+		for (const ASToken &token : tokens) {
+			if (token.type == ASTokenType::FUNCTION && token.start == 4) {
+				found_function = true;
+			}
+		}
+		CHECK(found_function);
+	}
+
 	// 类型判定优先于函数：Vector2(...) 是类型而非函数；int(...) 是基本类型。
 	{
 		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("Vector2(1, 2)", false, engine_types, user_types, out);

@@ -194,17 +194,17 @@ Vector<ASToken> ASHighlighterLexer::tokenize(const String &p_line, bool p_in_blo
 				type = ASTokenType::ENGINE_TYPE;
 			} else if (p_user_types.has(word)) {
 				type = ASTokenType::USER_TYPE;
-			} else if (i > 0 && p_line[i - 1] == '.') {
-				// 前接 '.' → 成员访问；放在类型判定之后，保证类型名优先于成员判定。
-				type = ASTokenType::MEMBER;
 			} else {
-				// 后随（可跨空白）'(' → 函数调用。
+				// 判定顺序遵循 spec：先「后随 '('」判函数，再「前接 '.'」判成员。
+				// 这样对象方法调用 obj.method() 记 FUNCTION，与 GDScript 观感一致。
 				int k = j;
 				while (k < length && (p_line[k] == ' ' || p_line[k] == '\t')) {
 					k++;
 				}
 				if (k < length && p_line[k] == '(') {
 					type = ASTokenType::FUNCTION;
+				} else if (i > 0 && p_line[i - 1] == '.') {
+					type = ASTokenType::MEMBER;
 				}
 			}
 			tokens.push_back({ i, j, type });
