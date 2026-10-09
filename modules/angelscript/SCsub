@@ -36,6 +36,10 @@ env_as.add_source_files(env.modules_sources, "*.cpp")
 env_as.Prepend(CPPPATH=["#modules/angelscript"])
 env_as.add_source_files(env.modules_sources, "binding/*.cpp")
 
+# editor/ 子目录（编辑器语法高亮器）；仅在编辑器构建下编译，运行时零影响。
+if env.editor_build:
+    env_as.add_source_files(env.modules_sources, "./editor/*.cpp")
+
 if env["tests"]:
     # 用例注册写在 tests/*.h：modules/modules_tests.gen.h 会把各模块的 tests/*.h
     # include 进 tests/test_main.cpp，用例才会进入最终二进制。
