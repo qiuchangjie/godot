@@ -35,11 +35,16 @@
 namespace TestAngelScriptDebugger {
 
 void test_builds_stack_info();
+void test_skips_caught_exception();
 
 #ifndef ANGELSCRIPT_DEBUGGER_TESTS_IMPL
 
 TEST_CASE("[AngelScript] 调试器能在异常回调内构建调用栈") {
 	test_builds_stack_info();
+}
+
+TEST_CASE("[AngelScript] 调试器不拦截脚本自己 catch 掉的异常") {
+	test_skips_caught_exception();
 }
 
 #endif

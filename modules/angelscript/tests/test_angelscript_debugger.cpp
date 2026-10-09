@@ -105,6 +105,12 @@ void capture_stack(asIScriptContext *p_ctx) {
 	g_captured_stack = ASDebugger::build_stack_info(p_ctx);
 }
 
+bool g_unhandled_seen = false;
+
+void probe_unhandled_flag(asIScriptContext *p_ctx) {
+	g_unhandled_seen = ASDebugger::is_unhandled_exception(p_ctx);
+}
+
 } // namespace
 
 void test_builds_stack_info() {
@@ -128,6 +134,36 @@ void test_builds_stack_info() {
 	CHECK(g_captured_stack[1].func == "outer");
 	CHECK(g_captured_stack[0].file == module_name);
 	CHECK(g_captured_stack[0].line >= 1);
+}
+
+void test_skips_caught_exception() {
+	// 脚本自己 catch 掉的异常不该惊动调试器——否则用户每写一个 try/catch 都会被断下。
+	const String guarded_source =
+			"void guarded() {\n"
+			"	try { int d = 0; int x = 1 / d; } catch { }\n"
+			"}\n";
+
+	g_unhandled_seen = true;
+	String module_name;
+	bool ran = run_until_exception(guarded_source, "guarded", probe_unhandled_flag, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+	CHECK_FALSE(g_unhandled_seen);
+
+	// 对照组：没有 try/catch 的同一个异常必须被判为「未处理」，否则上面那条
+	// CHECK_FALSE 可能只是因为谓词恒假而碰巧通过。
+	const String bare_source =
+			"void bare() { int d = 0; int x = 1 / d; }\n";
+
+	g_unhandled_seen = false;
+	ran = run_until_exception(bare_source, "bare", probe_unhandled_flag, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+	CHECK(g_unhandled_seen);
 }
 
 } // namespace TestAngelScriptDebugger

@@ -531,15 +531,19 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 
 	const int executed = p_context->Execute();
 	if (executed != asEXECUTION_FINISHED) {
-		// 静默吞掉异常会让脚本错误在宿主侧完全不可见（callp 只把它翻译成一个泛化错误码）。
-		const char *exception = p_context->GetExceptionString();
-		const char *section = nullptr;
-		const int line = p_context->GetExceptionLineNumber(nullptr, &section);
-		ERR_PRINT(vformat("AngelScript call '%s' failed: %s (%s:%d).",
-				p_func->GetName() != nullptr ? p_func->GetName() : "<anonymous>",
-				exception != nullptr ? exception : "execution did not finish",
-				section != nullptr ? section : "<script>",
-				line));
+		// 调试器已经以「富信息 + 调用栈」的形式上报过了，再打一条干巴巴的 ERR_PRINT
+		// 会让错误面板出现重复条目。非调试运行时 consume 恒为 false，行为与以前完全一致。
+		if (!ASDebugger::consume_exception_reported()) {
+			// 静默吞掉异常会让脚本错误在宿主侧完全不可见（callp 只把它翻译成一个泛化错误码）。
+			const char *exception = p_context->GetExceptionString();
+			const char *section = nullptr;
+			const int line = p_context->GetExceptionLineNumber(nullptr, &section);
+			ERR_PRINT(vformat("AngelScript call '%s' failed: %s (%s:%d).",
+					p_func->GetName() != nullptr ? p_func->GetName() : "<anonymous>",
+					exception != nullptr ? exception : "execution did not finish",
+					section != nullptr ? section : "<script>",
+					line));
+		}
 		return finish(FAILED);
 	}
 
