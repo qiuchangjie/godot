@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  test_angelscript_highlighter.h                                        */
+/*  as_syntax_highlighter.h                                               */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,37 +30,45 @@
 
 #pragma once
 
-#include "tests/test_macros.h"
+#include "as_highlighter_lexer.h"
+#include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
+#include "editor/script/syntax_highlighters.h"
 
-// 高亮器（含词法器）仅编辑器构建存在，故测试同样只在 TOOLS_ENABLED 下注册。
-// 本头被两处 include：tests/test_main.cpp（注册用例）与同目录的
-// test_angelscript_highlighter.cpp（拿到函数声明）。实现方必须先定义
-// ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL，否则 TEST_CASE 会注册两次。
-#ifdef TOOLS_ENABLED
+// 把 ASHighlighterLexer 的 token 映射成编辑器主题色。
+// 跨行块注释状态用与 GDScriptSyntaxHighlighter/CodeHighlighter 相同的「按行缓存 + 向前走查」策略，
+// 而不是计划里设想的 block_comment_cached_to：走查法已被上游验证，且不需要额外字段。
+class ASSyntaxHighlighter : public EditorSyntaxHighlighter {
+	GDCLASS(ASSyntaxHighlighter, EditorSyntaxHighlighter);
 
-void as_highlighter_lexer_recognizes_keywords_and_builtin_types();
-void as_highlighter_lexer_recognizes_literals_comments_and_directives();
-void as_highlighter_lexer_classifies_identifiers_with_type_precedence();
-void as_syntax_highlighter_reports_language_and_creates_instances();
+	Color symbol_color;
+	Color keyword_color;
+	Color base_type_color;
+	Color engine_type_color;
+	Color user_type_color;
+	Color comment_color;
+	Color string_color;
+	Color number_color;
+	Color function_color;
+	Color member_variable_color;
+	Color font_color;
 
-#ifndef ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL
+	HashSet<StringName> engine_types;
+	HashSet<StringName> user_types;
 
-TEST_CASE("[AngelScript] highlighter lexer recognizes keywords and builtin types") {
-	as_highlighter_lexer_recognizes_keywords_and_builtin_types();
-}
+	// 行号 → 该行「行尾」是否处于块注释内（等价于下一行的行首状态）。
+	HashMap<int, bool> block_comment_state;
 
-TEST_CASE("[AngelScript] highlighter lexer recognizes literals, comments and directives") {
-	as_highlighter_lexer_recognizes_literals_comments_and_directives();
-}
+	Color _token_color(ASTokenType p_type) const;
 
-TEST_CASE("[AngelScript] highlighter lexer classifies identifiers with type precedence") {
-	as_highlighter_lexer_classifies_identifiers_with_type_precedence();
-}
+protected:
+	static void _bind_methods();
 
-TEST_CASE("[AngelScript] syntax highlighter reports its language and creates instances") {
-	as_syntax_highlighter_reports_language_and_creates_instances();
-}
-
-#endif // ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL
-
-#endif // TOOLS_ENABLED
+public:
+	virtual void _update_cache() override;
+	virtual Dictionary _get_line_syntax_highlighting_impl(int p_line) override;
+	virtual void _clear_highlighting_cache() override;
+	virtual Ref<EditorSyntaxHighlighter> _create() const override;
+	virtual String _get_name() const override;
+	virtual PackedStringArray _get_supported_languages() const override;
+};
