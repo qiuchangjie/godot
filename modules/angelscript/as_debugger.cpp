@@ -32,6 +32,7 @@
 
 #include "as_script_language.h"
 
+#include "binding/as_binding_decl.h"
 #include "core/debugger/engine_debugger.h"
 #include "core/debugger/script_debugger.h"
 
@@ -45,6 +46,9 @@ namespace {
 thread_local asIScriptContext *g_break_context = nullptr;
 thread_local String g_break_error;
 thread_local bool g_exception_reported = false;
+
+// 递归展开的默认深度上限。调用方（Godot 调试器）传入 >= 0 的值时以调用方为准。
+constexpr int DEFAULT_MAX_DEPTH = 4;
 
 bool is_level_valid(asIScriptContext *p_ctx, int p_level) {
 	return p_ctx != nullptr && p_level >= 0 && p_level < (int)p_ctx->GetCallstackSize();
@@ -187,4 +191,92 @@ String ASDebugger::get_stack_level_source(asIScriptContext *p_ctx, int p_level) 
 		return "<script>";
 	}
 	return String::utf8(section);
+}
+
+Variant ASDebugger::decode_var(void *p_addr, int p_type_id, asIScriptEngine *p_engine, int p_depth, int p_max_depth, int p_max_subitems, HashSet<const void *> &r_seen) {
+	if (p_addr == nullptr || p_engine == nullptr) {
+		return Variant();
+	}
+
+	// 顺序很重要：必须先按 typeId 判标量，再去查类型名。因为
+	// as_name_to_variant_type() 对 "bool"/"int64"/"double" 也会返回非 NIL，
+	// 顺序颠倒就会把一个 4 字节 int 当成 Variant 来读，直接读野内存。
+	switch (p_type_id) {
+		case asTYPEID_VOID:
+			return Variant();
+		case asTYPEID_BOOL:
+			return *reinterpret_cast<const bool *>(p_addr);
+		case asTYPEID_INT8:
+			return (int64_t)*reinterpret_cast<const int8_t *>(p_addr);
+		case asTYPEID_INT16:
+			return (int64_t)*reinterpret_cast<const int16_t *>(p_addr);
+		case asTYPEID_INT32:
+			return (int64_t)*reinterpret_cast<const int32_t *>(p_addr);
+		case asTYPEID_INT64:
+			return *reinterpret_cast<const int64_t *>(p_addr);
+		case asTYPEID_UINT8:
+			return (int64_t)*reinterpret_cast<const uint8_t *>(p_addr);
+		case asTYPEID_UINT16:
+			return (int64_t)*reinterpret_cast<const uint16_t *>(p_addr);
+		case asTYPEID_UINT32:
+			return (int64_t)*reinterpret_cast<const uint32_t *>(p_addr);
+		case asTYPEID_UINT64:
+			return (int64_t)*reinterpret_cast<const uint64_t *>(p_addr);
+		case asTYPEID_FLOAT:
+			return (double)*reinterpret_cast<const float *>(p_addr);
+		case asTYPEID_DOUBLE:
+			return *reinterpret_cast<const double *>(p_addr);
+		default:
+			break;
+	}
+
+	asITypeInfo *type = p_engine->GetTypeInfoById(p_type_id);
+	const String type_name = (type != nullptr && type->GetName() != nullptr) ? String::utf8(type->GetName()) : String();
+
+	const bool is_handle = (p_type_id & asTYPEID_OBJHANDLE) != 0;
+	const bool is_script_object = (p_type_id & asTYPEID_SCRIPTOBJECT) != 0;
+
+	// 绑定值类型：34 个内建类型与 Variant 自身在 AS 侧都是独立的 asOBJ_VALUE，
+	// 但底层存储统一就是一块 Godot Variant（as_binding_value_types.h:40-43）。
+	if (!is_handle && !is_script_object && ASBindingDecl::as_name_to_variant_type(type_name) != Variant::NIL) {
+		return *reinterpret_cast<const Variant *>(p_addr);
+	}
+
+	// Task 4 会在这里补上 AS 脚本 class 与 Godot 对象句柄两类。
+	const char *decl = p_engine->GetTypeDeclaration(p_type_id, true);
+	return "<" + (decl != nullptr ? String::utf8(decl) : String("unknown")) + ">";
+}
+
+void ASDebugger::get_stack_level_locals(int p_level, List<String> *p_names, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+	get_stack_level_locals(g_break_context, p_level, p_names, p_values, p_max_subitems, p_max_depth);
+}
+
+void ASDebugger::get_stack_level_locals(asIScriptContext *p_ctx, int p_level, List<String> *p_names, List<Variant> *p_values, int p_max_subitems, int p_max_depth) {
+	if (!is_level_valid(p_ctx, p_level) || p_names == nullptr || p_values == nullptr) {
+		return;
+	}
+
+	asIScriptEngine *engine = p_ctx->GetEngine();
+	if (engine == nullptr) {
+		return;
+	}
+
+	const int depth_limit = p_max_depth >= 0 ? p_max_depth : DEFAULT_MAX_DEPTH;
+	const int count = p_ctx->GetVarCount((asUINT)p_level);
+	for (int i = 0; i < count; i++) {
+		const char *name = nullptr;
+		int type_id = 0;
+		if (p_ctx->GetVar((asUINT)i, (asUINT)p_level, &name, &type_id) < 0) {
+			continue;
+		}
+		void *addr = p_ctx->GetAddressOfVar((asUINT)i, (asUINT)p_level);
+		// 地址为空说明变量还没进入作用域，这时解引用必崩——直接跳过。
+		if (addr == nullptr) {
+			continue;
+		}
+
+		HashSet<const void *> seen;
+		p_names->push_back(name != nullptr ? String::utf8(name) : ("<var " + itos(i) + ">"));
+		p_values->push_back(decode_var(addr, type_id, engine, 0, depth_limit, p_max_subitems, seen));
+	}
 }
