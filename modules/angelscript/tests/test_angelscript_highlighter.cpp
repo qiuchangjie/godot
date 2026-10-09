@@ -147,4 +147,61 @@ void as_highlighter_lexer_recognizes_literals_comments_and_directives() {
 	CHECK(tokenize_default("   ").is_empty());
 }
 
+void as_highlighter_lexer_classifies_identifiers_with_type_precedence() {
+	HashSet<StringName> engine_types;
+	engine_types.insert("Node");
+	engine_types.insert("Vector2");
+
+	HashSet<StringName> user_types;
+	user_types.insert("MyThing");
+
+	bool out = false;
+
+	// 引擎类型 / 用户类型。
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("Node n;", false, engine_types, user_types, out);
+		CHECK(tokens.size() == 3);
+		CHECK(tokens[0].type == ASTokenType::ENGINE_TYPE);
+		CHECK(tokens[1].type == ASTokenType::IDENTIFIER);
+	}
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("MyThing t;", false, engine_types, user_types, out);
+		CHECK(tokens[0].type == ASTokenType::USER_TYPE);
+	}
+
+	// 函数调用：标识符后随 '('。
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("print(1);", false, engine_types, user_types, out);
+		CHECK(tokens[0].type == ASTokenType::FUNCTION);
+	}
+
+	// 成员：前接 '.'。
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("obj.hp", false, engine_types, user_types, out);
+		bool found_member = false;
+		for (const ASToken &token : tokens) {
+			if (token.type == ASTokenType::MEMBER && token.start == 4) {
+				found_member = true;
+			}
+		}
+		CHECK(found_member);
+	}
+
+	// 类型判定优先于函数：Vector2(...) 是类型而非函数；int(...) 是基本类型。
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("Vector2(1, 2)", false, engine_types, user_types, out);
+		CHECK(tokens[0].type == ASTokenType::ENGINE_TYPE);
+	}
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("int(x)", false, engine_types, user_types, out);
+		CHECK(tokens[0].type == ASTokenType::BUILTIN_TYPE);
+	}
+
+	// 关键字优先于函数：if(...) 仍是关键字。
+	{
+		Vector<ASToken> tokens = ASHighlighterLexer::tokenize("if (x)", false, engine_types, user_types, out);
+		CHECK(tokens[0].type == ASTokenType::KEYWORD);
+	}
+}
+
 #endif // TOOLS_ENABLED

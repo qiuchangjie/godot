@@ -40,6 +40,7 @@
 
 void as_highlighter_lexer_recognizes_keywords_and_builtin_types();
 void as_highlighter_lexer_recognizes_literals_comments_and_directives();
+void as_highlighter_lexer_classifies_identifiers_with_type_precedence();
 
 #ifndef ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL
 
@@ -49,6 +50,10 @@ TEST_CASE("[AngelScript] highlighter lexer recognizes keywords and builtin types
 
 TEST_CASE("[AngelScript] highlighter lexer recognizes literals, comments and directives") {
 	as_highlighter_lexer_recognizes_literals_comments_and_directives();
+}
+
+TEST_CASE("[AngelScript] highlighter lexer classifies identifiers with type precedence") {
+	as_highlighter_lexer_classifies_identifiers_with_type_precedence();
 }
 
 #endif // ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL
