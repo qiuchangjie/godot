@@ -100,4 +100,47 @@ void as_profiling_counts_and_stops() {
 	lang->profiling_stop();
 }
 
+void as_profiling_frame_snapshot() {
+	ASScriptLanguage *lang = ASScriptLanguage::get_singleton();
+	REQUIRE(lang != nullptr);
+	if (lang == nullptr) {
+		return;
+	}
+
+	lang->profiling_start();
+	lang->profile_function("as_test::frame", 5);
+	lang->profile_function("as_test::frame", 7);
+
+	// 未 frame() 前帧数据必须为空（Review Focus 4）。
+	ScriptLanguage::ProfilingInfo frame_info[8];
+	CHECK(lang->profiling_get_frame_data(frame_info, 8) == 0);
+
+	lang->frame();
+	const int frame_count = lang->profiling_get_frame_data(frame_info, 8);
+	ScriptLanguage::ProfilingInfo frame_found;
+	const bool frame_has = _find_profile(frame_info, frame_count, "as_test::frame", &frame_found);
+	REQUIRE(frame_has);
+	if (!frame_has) {
+		return;
+	}
+	CHECK(frame_found.call_count == 2);
+	CHECK(frame_found.total_time == 12);
+
+	// 本帧无调用，再 frame() 后帧数据归零，但累计数据保留。
+	lang->frame();
+	CHECK(lang->profiling_get_frame_data(frame_info, 8) == 0);
+
+	ScriptLanguage::ProfilingInfo acc_info[8];
+	const int acc_count = lang->profiling_get_accumulated_data(acc_info, 8);
+	ScriptLanguage::ProfilingInfo acc_found;
+	const bool acc_has = _find_profile(acc_info, acc_count, "as_test::frame", &acc_found);
+	REQUIRE(acc_has);
+	if (!acc_has) {
+		return;
+	}
+	CHECK(acc_found.call_count == 2);
+	CHECK(acc_found.total_time == 12);
+	lang->profiling_stop();
+}
+
 #endif // DEBUG_ENABLED
