@@ -38,6 +38,8 @@ void test_builds_stack_info();
 void test_skips_caught_exception();
 void test_reads_locals();
 void test_decodes_bound_value_type();
+void test_expands_script_class();
+void test_decodes_object_handle();
 
 #ifndef ANGELSCRIPT_DEBUGGER_TESTS_IMPL
 
@@ -55,6 +57,14 @@ TEST_CASE("[AngelScript] 调试器能读出当前帧的局部标量") {
 
 TEST_CASE("[AngelScript] 调试器能解码绑定值类型局部变量") {
 	test_decodes_bound_value_type();
+}
+
+TEST_CASE("[AngelScript] 调试器能递归展开脚本类并挡住环与深度") {
+	test_expands_script_class();
+}
+
+TEST_CASE("[AngelScript] 调试器解码 Godot 对象句柄且容忍对象已销毁") {
+	test_decodes_object_handle();
 }
 
 #endif
