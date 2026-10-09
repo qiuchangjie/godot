@@ -61,6 +61,20 @@ void ASScriptLanguage::frame() {
 	if (as_engine != nullptr) {
 		as_engine->maybe_collect_garbage();
 	}
+
+#ifdef DEBUG_ENABLED
+	if (profiling) {
+		MutexLock lock(profile_mutex);
+		// 把本帧计数滚动为「上一帧」并清零，供 profiling_get_frame_data() 读取；
+		// 累计数据（call_count/total_time）保持不动。frame 与采样写入同锁，避免撕裂。
+		for (KeyValue<StringName, ProfileEntry> &kv : profile_data) {
+			kv.value.last_frame_call_count = kv.value.frame_call_count;
+			kv.value.last_frame_total_time = kv.value.frame_total_time;
+			kv.value.frame_call_count = 0;
+			kv.value.frame_total_time = 0;
+		}
+	}
+#endif
 }
 
 void ASScriptLanguage::finish() {
