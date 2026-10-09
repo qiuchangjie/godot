@@ -86,4 +86,65 @@ void as_highlighter_lexer_recognizes_keywords_and_builtin_types() {
 	CHECK(first_token_text("foo bar;", ASTokenType::IDENTIFIER) == "foo");
 }
 
+void as_highlighter_lexer_recognizes_literals_comments_and_directives() {
+	// 字符串：含转义。
+	CHECK(first_token_text("\"hello\" + x", ASTokenType::STRING) == "\"hello\"");
+	CHECK(first_token_text("\"a\\\"b\"", ASTokenType::STRING) == "\"a\\\"b\"");
+	// 未闭合字符串必须在行尾结束，且不产生 COMMENT。
+	CHECK(first_token_text("\"abc", ASTokenType::STRING) == "\"abc");
+	CHECK(count_tokens("\"abc", ASTokenType::COMMENT) == 0);
+	// 字符串里的 // 与 /* 不是注释。
+	CHECK(count_tokens("\"a//b\"", ASTokenType::COMMENT) == 0);
+	CHECK(count_tokens("\"a/*b\"", ASTokenType::COMMENT) == 0);
+	CHECK(first_token_text("\"a//b\"", ASTokenType::STRING) == "\"a//b\"");
+
+	// 数字：十六进制 / 二进制 / 浮点 / 指数 / 后缀。
+	CHECK(first_token_text("0x1F", ASTokenType::NUMBER) == "0x1F");
+	CHECK(first_token_text("0b1010", ASTokenType::NUMBER) == "0b1010");
+	CHECK(first_token_text("3.14", ASTokenType::NUMBER) == "3.14");
+	CHECK(first_token_text("1e10", ASTokenType::NUMBER) == "1e10");
+	CHECK(first_token_text("2.0f", ASTokenType::NUMBER) == "2.0f");
+	CHECK(first_token_text("10u", ASTokenType::NUMBER) == "10u");
+
+	// 符号。
+	CHECK(first_token_text("f(x)", ASTokenType::SYMBOL) == "(");
+
+	// 行注释。
+	CHECK(first_token_text("x // trailing", ASTokenType::COMMENT) == "// trailing");
+
+	// `// godot_base:` 指令（容忍 // 后无空格）。
+	CHECK(first_token_text("// godot_base: Node", ASTokenType::DIRECTIVE) == "// godot_base: Node");
+	CHECK(first_token_text("//godot_base:Node", ASTokenType::DIRECTIVE) == "//godot_base:Node");
+	CHECK(count_tokens("// graceful comment", ASTokenType::DIRECTIVE) == 0);
+
+	// 单行块注释。
+	CHECK(first_token_text("a /* b */ c", ASTokenType::COMMENT) == "/* b */");
+
+	// 多行块注释：开行 out=true，闭行 out=false 且其后恢复正常着色。
+	bool out = false;
+	Vector<ASToken> open_tokens = tokenize_default("/* start", false, &out);
+	CHECK(out == true);
+	CHECK(open_tokens.size() == 1);
+	CHECK(open_tokens[0].type == ASTokenType::COMMENT);
+
+	Vector<ASToken> close_tokens = tokenize_default(" end */ x", true, &out);
+	CHECK(out == false);
+	// 注意：first_token_text/count_tokens 辅助函数按 p_in_block=false 分词，无法表达续行；
+	// 这里直接断言 block-aware 的 close_tokens。
+	CHECK(close_tokens.size() == 2);
+	CHECK(close_tokens[0].type == ASTokenType::COMMENT);
+	CHECK(close_tokens[0].end == 7); // " end */"
+	CHECK(close_tokens[1].type == ASTokenType::IDENTIFIER); // x
+
+	// 已在块注释内的整行（无闭合）仍为注释且 out 保持 true。
+	Vector<ASToken> mid_tokens = tokenize_default("still inside", true, &out);
+	CHECK(out == true);
+	CHECK(mid_tokens.size() == 1);
+	CHECK(mid_tokens[0].type == ASTokenType::COMMENT);
+
+	// 空行 / 纯空白不产出 token。
+	CHECK(tokenize_default("").is_empty());
+	CHECK(tokenize_default("   ").is_empty());
+}
+
 #endif // TOOLS_ENABLED

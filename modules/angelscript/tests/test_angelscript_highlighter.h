@@ -39,11 +39,16 @@
 #ifdef TOOLS_ENABLED
 
 void as_highlighter_lexer_recognizes_keywords_and_builtin_types();
+void as_highlighter_lexer_recognizes_literals_comments_and_directives();
 
 #ifndef ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL
 
 TEST_CASE("[AngelScript] highlighter lexer recognizes keywords and builtin types") {
 	as_highlighter_lexer_recognizes_keywords_and_builtin_types();
+}
+
+TEST_CASE("[AngelScript] highlighter lexer recognizes literals, comments and directives") {
+	as_highlighter_lexer_recognizes_literals_comments_and_directives();
 }
 
 #endif // ANGELSCRIPT_HIGHLIGHTER_TESTS_IMPL

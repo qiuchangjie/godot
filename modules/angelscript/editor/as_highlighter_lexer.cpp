@@ -64,14 +64,121 @@ static bool _is_ident_continue(char32_t p_char) {
 	return is_ascii_identifier_char(p_char);
 }
 
+// 符号判定不能直接用 char_utils 的 is_symbol（它把空格/制表也算作 symbol），
+// 故此处排除标识符字符、空白与字符串引号（引号已在字符串分支消费）。
+static bool _is_as_symbol(char32_t p_char) {
+	return !is_ascii_identifier_char(p_char) && !is_whitespace(p_char) && p_char != '"';
+}
+
 Vector<ASToken> ASHighlighterLexer::tokenize(const String &p_line, bool p_in_block_comment, const HashSet<StringName> &p_engine_types, const HashSet<StringName> &p_user_types, bool &r_out_block_comment) {
 	Vector<ASToken> tokens;
 	const int length = p_line.length();
 	int i = 0;
+	bool in_block = p_in_block_comment;
 
 	while (i < length) {
 		const char32_t c = p_line[i];
 
+		// 1) 块注释续行。
+		if (in_block) {
+			const int close = p_line.find("*/", i);
+			if (close == -1) {
+				tokens.push_back({ i, length, ASTokenType::COMMENT });
+				i = length;
+			} else {
+				tokens.push_back({ i, close + 2, ASTokenType::COMMENT });
+				i = close + 2;
+				in_block = false;
+			}
+			continue;
+		}
+
+		// 2) 行注释与 `// godot_base:` 指令。
+		if (c == '/' && i + 1 < length && p_line[i + 1] == '/') {
+			const String body = p_line.substr(i + 2).strip_edges();
+			tokens.push_back({ i, length, body.begins_with("godot_base:") ? ASTokenType::DIRECTIVE : ASTokenType::COMMENT });
+			i = length;
+			continue;
+		}
+
+		// 3) 块注释起始（单行或延续到后续行）。
+		if (c == '/' && i + 1 < length && p_line[i + 1] == '*') {
+			const int close = p_line.find("*/", i + 2);
+			if (close == -1) {
+				tokens.push_back({ i, length, ASTokenType::COMMENT });
+				in_block = true;
+				i = length;
+			} else {
+				tokens.push_back({ i, close + 2, ASTokenType::COMMENT });
+				i = close + 2;
+			}
+			continue;
+		}
+
+		// 4) 字符串（不跨行，\" 转义）。
+		if (c == '"') {
+			int j = i + 1;
+			while (j < length) {
+				if (p_line[j] == '\\' && j + 1 < length) {
+					j += 2;
+					continue;
+				}
+				if (p_line[j] == '"') {
+					j++;
+					break;
+				}
+				j++;
+			}
+			tokens.push_back({ i, j, ASTokenType::STRING });
+			i = j;
+			continue;
+		}
+
+		// 5) 数字。
+		if (is_digit(c)) {
+			int j = i;
+			if (c == '0' && i + 1 < length && (p_line[i + 1] == 'x' || p_line[i + 1] == 'X')) {
+				j = i + 2;
+				while (j < length && is_hex_digit(p_line[j])) {
+					j++;
+				}
+			} else if (c == '0' && i + 1 < length && (p_line[i + 1] == 'b' || p_line[i + 1] == 'B')) {
+				j = i + 2;
+				while (j < length && is_binary_digit(p_line[j])) {
+					j++;
+				}
+			} else {
+				while (j < length && is_digit(p_line[j])) {
+					j++;
+				}
+				if (j < length && p_line[j] == '.') {
+					j++;
+					while (j < length && is_digit(p_line[j])) {
+						j++;
+					}
+				}
+				if (j < length && (p_line[j] == 'e' || p_line[j] == 'E')) {
+					int k = j + 1;
+					if (k < length && (p_line[k] == '+' || p_line[k] == '-')) {
+						k++;
+					}
+					if (k < length && is_digit(p_line[k])) {
+						j = k;
+						while (j < length && is_digit(p_line[j])) {
+							j++;
+						}
+					}
+				}
+				if (j < length && (p_line[j] == 'f' || p_line[j] == 'F' || p_line[j] == 'd' || p_line[j] == 'D' || p_line[j] == 'u' || p_line[j] == 'U')) {
+					j++;
+				}
+			}
+			tokens.push_back({ i, j, ASTokenType::NUMBER });
+			i = j;
+			continue;
+		}
+
+		// 6) 标识符 / 关键字 / 基本类型。
 		if (_is_ident_start(c)) {
 			int j = i + 1;
 			while (j < length && _is_ident_continue(p_line[j])) {
@@ -89,14 +196,16 @@ Vector<ASToken> ASHighlighterLexer::tokenize(const String &p_line, bool p_in_blo
 			continue;
 		}
 
-		// 字符串 / 注释 / 数字 / 符号 / 类型与函数判定在后续任务中补齐。
-		(void)p_in_block_comment;
-		(void)p_engine_types;
-		(void)p_user_types;
+		// 7) 符号。
+		if (_is_as_symbol(c)) {
+			tokens.push_back({ i, i + 1, ASTokenType::SYMBOL });
+			i++;
+			continue;
+		}
+
 		i++;
 	}
 
-	// 块注释状态在 Task 3 处理；此处先保持中立。
-	r_out_block_comment = false;
+	r_out_block_comment = in_block;
 	return tokens;
 }
