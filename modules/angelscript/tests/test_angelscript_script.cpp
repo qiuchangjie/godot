@@ -33,6 +33,7 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
+#include "scene/main/node.h"
 
 // 必须先定义该宏再包含测试头：本文件与 tests/test_main.cpp（经 modules_tests.gen.h）
 // 都会展开该头，不定义宏就会把 TEST_CASE 注册两遍、用例被跑两次。
@@ -229,6 +230,49 @@ void as_script_loads_through_resource_loader_from_user_path() {
 	da->remove(path);
 }
 
+void as_script_loader_ignores_cache_without_cyclic_conflict() {
+	// 回归守卫：编辑器 ScriptEditor::_reload_scripts() 会用 CACHE_MODE_IGNORE 从磁盘强制重载
+	// 脚本，而此时资源缓存里通常已存在同名脚本（编辑器打开的内存实例）。若加载器在 load()
+	// 内部自行 set_path()，会与既有缓存冲突并报 “possible cyclic resource inclusion”，
+	// 随后拿到空路径、编译失败、返回 null，最终 Script Editor 报 rel_scr.is_null()。
+	const String dir = "user://angelscript_ignore_cache";
+	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_USERDATA);
+	REQUIRE(da.is_valid());
+	if (!da.is_valid()) {
+		return;
+	}
+	da->make_dir_recursive(dir);
+	const String path = dir + "/hero.as";
+	{
+		Ref<FileAccess> f = FileAccess::open(path, FileAccess::WRITE);
+		REQUIRE(f.is_valid());
+		if (!f.is_valid()) {
+			da->remove(path);
+			return;
+		}
+		f->store_string("// godot_base: Node\nclass hero {\n\tvoid _ready() {}\n}\n");
+	}
+
+	// 预先在缓存里放一个“内存脚本”占住该路径，模拟编辑器已打开/引用该脚本。
+	Ref<ASScript> resident;
+	resident.instantiate();
+	resident->set_path(path);
+
+	Error err = OK;
+	Ref<Resource> res = ResourceLoader::load(path, "", ResourceLoader::CACHE_MODE_IGNORE, &err);
+	CHECK(err == OK);
+	CHECK(res.is_valid());
+	Ref<ASScript> reloaded = res;
+	if (reloaded.is_valid()) {
+		CHECK(reloaded->is_valid());
+		CHECK(reloaded->has_method("_ready"));
+	}
+
+	// 解除缓存占用并删除临时文件，避免影响其它用例。
+	resident->set_path("");
+	da->remove(path);
+}
+
 void as_script_reload_recompiles_from_updated_source() {
 	Ref<ASScript> script = _compile("// godot_base: Node\nclass enemy_spawner {\n\tvoid _ready() {}\n}\n", "res://enemy_spawner.as");
 	REQUIRE(script.is_valid());
@@ -248,4 +292,52 @@ void as_script_reload_recompiles_from_updated_source() {
 	CHECK(script->reload() == OK);
 	CHECK(script->is_valid());
 	CHECK(script->has_method("extra_step"));
+}
+
+void as_script_hot_reload_reattaches_and_refreshes() {
+	// 回归守卫：编辑器保存 .as 会经 saver 钩子触发热重载。热重载必须先摘除活跃实例再重编译
+	// （ASScript::reload 内部会 DiscardModule，带着实例重编会让 asIScriptObject 悬空），
+	// 随后重挂并恢复属性状态——这是“保存后 Inspector 刷新且不崩”的核心链路。
+	Ref<ASScript> script = _compile("// godot_base: Node\nclass as_hot_reload_unit {\n\tint hp;\n}\n", "res://as_hot_reload_unit.as");
+	REQUIRE(script.is_valid());
+	if (!script.is_valid()) {
+		return;
+	}
+	REQUIRE(script->is_valid());
+	if (!script->is_valid()) {
+		return;
+	}
+
+	Node *node = memnew(Node);
+	node->set_script(script);
+	ScriptInstance *si = node->get_script_instance();
+	REQUIRE(si != nullptr);
+	if (si == nullptr) {
+		memdelete(node);
+		return;
+	}
+	CHECK_FALSE(si->is_placeholder());
+
+	Variant hp_value(9);
+	CHECK(si->set("hp", hp_value));
+
+	// 模拟保存：新增成员 mp，并触发热重载。
+	script->set_source_code("// godot_base: Node\nclass as_hot_reload_unit {\n\tint hp;\n\tint mp;\n}\n");
+	script->reload_with_instances(true);
+
+	ScriptInstance *si2 = node->get_script_instance();
+	REQUIRE(si2 != nullptr);
+	if (si2 != nullptr) {
+		CHECK_FALSE(si2->is_placeholder());
+		CHECK(node->get_script() == Ref<Script>(script));
+
+		Variant restored;
+		CHECK(si2->get("hp", restored));
+		CHECK(int(restored) == 9);
+
+		Variant mp;
+		CHECK(si2->get("mp", mp));
+	}
+
+	memdelete(node);
 }

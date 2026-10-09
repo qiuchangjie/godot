@@ -58,6 +58,7 @@ public:
 	virtual bool supports_builtin_mode() const override { return false; }
 	virtual int find_function(const String &p_function, const String &p_code) const override;
 	virtual String make_function(const String &p_class, const String &p_name, const PackedStringArray &p_args) const override;
+	virtual Ref<Script> make_template(const String &p_template, const String &p_class_name, const String &p_base_class_name) const override;
 	virtual void auto_indent_code(String &p_code, int p_from_line, int p_to_line) const override {}
 	virtual void add_global_constant(const StringName &p_variable, const Variant &p_value) override {}
 
