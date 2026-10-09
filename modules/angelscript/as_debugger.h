@@ -32,6 +32,7 @@
 
 #include "core/object/script_language.h"
 #include "core/templates/hash_set.h"
+#include "core/templates/list.h"
 #include "core/templates/vector.h"
 #include "core/variant/variant.h"
 
@@ -75,4 +76,11 @@ public:
 	static String get_stack_level_function(asIScriptContext *p_ctx, int p_level);
 	static String get_stack_level_source(int p_level);
 	static String get_stack_level_source(asIScriptContext *p_ctx, int p_level);
+
+	static void get_stack_level_locals(int p_level, List<String> *p_names, List<Variant> *p_values, int p_max_subitems, int p_max_depth);
+	static void get_stack_level_locals(asIScriptContext *p_ctx, int p_level, List<String> *p_names, List<Variant> *p_values, int p_max_subitems, int p_max_depth);
+
+	// p_addr 的语义见实现里的「一次解引用规则」注释：非句柄类型它直指数据本体，
+	// 句柄类型它指向句柄槽（槽值才是编码后的对象）。
+	static Variant decode_var(void *p_addr, int p_type_id, asIScriptEngine *p_engine, int p_depth, int p_max_depth, int p_max_subitems, HashSet<const void *> &r_seen);
 };

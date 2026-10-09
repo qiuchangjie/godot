@@ -111,6 +111,29 @@ void probe_unhandled_flag(asIScriptContext *p_ctx) {
 	g_unhandled_seen = ASDebugger::is_unhandled_exception(p_ctx);
 }
 
+List<String> g_local_names;
+List<Variant> g_local_values;
+
+void capture_locals(asIScriptContext *p_ctx) {
+	g_local_names.clear();
+	g_local_values.clear();
+	ASDebugger::get_stack_level_locals(p_ctx, 0, &g_local_names, &g_local_values, -1, -1);
+}
+
+// 在 names/values 两张平行表里按名字取值；找不到返回空 Variant。
+Variant find_local(const String &p_name) {
+	const List<String>::Element *n = g_local_names.front();
+	const List<Variant>::Element *v = g_local_values.front();
+	while (n != nullptr && v != nullptr) {
+		if (n->get() == p_name) {
+			return v->get();
+		}
+		n = n->next();
+		v = v->next();
+	}
+	return Variant();
+}
+
 } // namespace
 
 void test_builds_stack_info() {
@@ -164,6 +187,55 @@ void test_skips_caught_exception() {
 		return;
 	}
 	CHECK(g_unhandled_seen);
+}
+
+void test_reads_locals() {
+	// 末尾那个 late 变量在抛异常时还没进入作用域，GetAddressOfVar 会返回 nullptr。
+	// 这里顺带确认解码器跳过它而不是解引用空指针崩掉。
+	const String source =
+			"void probe() {\n"
+			"	int a = 42;\n"
+			"	double b = 1.5;\n"
+			"	bool c = true;\n"
+			"	int d = 0;\n"
+			"	int boom = 1 / d;\n"
+			"	int late = 7;\n"
+			"}\n";
+
+	String module_name;
+	const bool ran = run_until_exception(source, "probe", capture_locals, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+
+	CHECK(find_local("a") == Variant(42));
+	CHECK(find_local("b") == Variant(1.5));
+	CHECK(find_local("c") == Variant(true));
+	CHECK(g_local_names.size() == g_local_values.size());
+}
+
+void test_decodes_bound_value_type() {
+	const String source =
+			"void probe() {\n"
+			"	Vector2 v = Vector2(3, 4);\n"
+			"	int d = 0;\n"
+			"	int boom = 1 / d;\n"
+			"}\n";
+
+	String module_name;
+	const bool ran = run_until_exception(source, "probe", capture_locals, &module_name);
+	REQUIRE(ran);
+	if (!ran) {
+		return;
+	}
+
+	const Variant got = find_local("v");
+	REQUIRE(got.get_type() == Variant::VECTOR2);
+	if (got.get_type() != Variant::VECTOR2) {
+		return;
+	}
+	CHECK(Vector2(got) == Vector2(3, 4));
 }
 
 } // namespace TestAngelScriptDebugger

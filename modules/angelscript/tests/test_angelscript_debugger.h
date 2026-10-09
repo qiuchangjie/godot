@@ -36,6 +36,8 @@ namespace TestAngelScriptDebugger {
 
 void test_builds_stack_info();
 void test_skips_caught_exception();
+void test_reads_locals();
+void test_decodes_bound_value_type();
 
 #ifndef ANGELSCRIPT_DEBUGGER_TESTS_IMPL
 
@@ -45,6 +47,14 @@ TEST_CASE("[AngelScript] 调试器能在异常回调内构建调用栈") {
 
 TEST_CASE("[AngelScript] 调试器不拦截脚本自己 catch 掉的异常") {
 	test_skips_caught_exception();
+}
+
+TEST_CASE("[AngelScript] 调试器能读出当前帧的局部标量") {
+	test_reads_locals();
+}
+
+TEST_CASE("[AngelScript] 调试器能解码绑定值类型局部变量") {
+	test_decodes_bound_value_type();
 }
 
 #endif
