@@ -79,6 +79,9 @@ public:
 	bool is_initialized() const { return engine != nullptr; }
 	asIScriptEngine *get_engine() const { return engine; }
 
+	// 上下文创建的唯一入口：内部会立刻安装调试回调，避免新增创建点时漏装。
+	asIScriptContext *create_context();
+
 	// 运行期绑定计划（ensure_initialized() 之后有效）。
 	const ASBindingPlan &get_binding_plan() const { return binding_plan; }
 

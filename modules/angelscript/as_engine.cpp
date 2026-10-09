@@ -30,6 +30,7 @@
 
 #include "as_engine.h"
 
+#include "as_debugger.h"
 #include "as_host_bridge.h"
 #include "as_script_instance.h"
 #include "as_script_language.h"
@@ -324,11 +325,23 @@ bool ASEngine::compile_module(const String &p_name, const String &p_source, Stri
 	return false;
 }
 
+asIScriptContext *ASEngine::create_context() {
+	if (engine == nullptr) {
+		return nullptr;
+	}
+	asIScriptContext *ctx = engine->CreateContext();
+	if (ctx != nullptr) {
+		ASDebugger::attach(ctx);
+	}
+	return ctx;
+}
+
 Error ASEngine::execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int *r_ret) {
 	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
 	ERR_FAIL_NULL_V(p_func, ERR_INVALID_PARAMETER);
 
-	asIScriptContext *ctx = p_engine->CreateContext();
+	// 经统一入口创建，保证调试回调一定装上。
+	asIScriptContext *ctx = get_singleton()->create_context();
 	ERR_FAIL_NULL_V(ctx, ERR_CANT_CREATE);
 
 	// 无参全局函数 = 以空对象、零参调用 call_function，复用其参数编组、返回值映射
