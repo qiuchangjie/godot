@@ -1,0 +1,68 @@
+/**************************************************************************/
+/*  as_debugger.h                                                         */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
+#include "core/object/script_language.h"
+#include "core/templates/hash_set.h"
+#include "core/templates/vector.h"
+#include "core/variant/variant.h"
+
+class asIScriptContext;
+class asIScriptEngine;
+
+// AngelScript <-> Godot 调试器的唯一桥接层。
+//
+// 为什么所有查询都直读「活着的」上下文而不做快照：AS 的调用栈在 Execute() 返回后
+// 立刻被展开，栈帧与局部变量地址随之失效。因此异常上报与断点挂起都必须在
+// SetExceptionCallback 回调仍在栈上的那一刻完成，查询也只能在那期间进行。
+//
+// 每个查询都提供「显式 ctx 重载 + 无参包装」两个版本：无参版读 thread_local 的
+// break_context（生产路径，由编辑器在断点期间反查），带 ctx 版供测试在自己的
+// 异常回调内直接调用——保证被测代码就是被用的代码。
+class ASDebugger {
+public:
+	// 唯一的回调安装入口。所有上下文创建后必须经此装配（见 ASEngine::create_context）。
+	static void attach(asIScriptContext *p_ctx);
+
+	static asIScriptContext *get_break_context();
+	static String get_error();
+
+	static Vector<ScriptLanguage::StackInfo> build_stack_info(asIScriptContext *p_ctx);
+
+	static int get_stack_level_count();
+	static int get_stack_level_count(asIScriptContext *p_ctx);
+	static int get_stack_level_line(int p_level);
+	static int get_stack_level_line(asIScriptContext *p_ctx, int p_level);
+	static String get_stack_level_function(int p_level);
+	static String get_stack_level_function(asIScriptContext *p_ctx, int p_level);
+	static String get_stack_level_source(int p_level);
+	static String get_stack_level_source(asIScriptContext *p_ctx, int p_level);
+};

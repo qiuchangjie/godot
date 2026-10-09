@@ -88,7 +88,7 @@ ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owne
 	asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
 	ERR_FAIL_NULL_MSG(engine, "AngelScript engine is not initialized.");
 
-	context = engine->CreateContext();
+	context = ASEngine::get_singleton()->create_context();
 	ERR_FAIL_NULL_MSG(context, "Failed to create an AngelScript context.");
 
 	// 默认构造（无参 factory）必须在此完成：之后引擎只按名字调方法、按索引读写属性。
