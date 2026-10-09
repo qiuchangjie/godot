@@ -38,6 +38,7 @@
 
 void as_profiling_counts_and_stops();
 void as_profiling_frame_snapshot();
+void as_profiling_records_real_execution();
 
 // 本头被两处 include：tests/test_main.cpp（注册用例）与同目录的
 // test_angelscript_profiling.cpp（拿到函数声明）。实现方必须先定义
@@ -50,6 +51,10 @@ TEST_CASE("[AngelScript] profiling counts calls and stops") {
 
 TEST_CASE("[AngelScript] profiling frame snapshot and reset") {
 	as_profiling_frame_snapshot();
+}
+
+TEST_CASE("[AngelScript] profiling records real execution") {
+	as_profiling_records_real_execution();
 }
 
 #endif // ANGELSCRIPT_PROFILING_TESTS_IMPL
