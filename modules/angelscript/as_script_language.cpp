@@ -215,15 +215,85 @@ void ASScriptLanguage::get_public_annotations(List<MethodInfo> *p_annotations) c
 }
 
 void ASScriptLanguage::profiling_start() {
+#ifdef DEBUG_ENABLED
+	MutexLock lock(profile_mutex);
+	profile_data.clear();
+	profiling = true;
+#endif
 }
 
 void ASScriptLanguage::profiling_stop() {
+#ifdef DEBUG_ENABLED
+	MutexLock lock(profile_mutex);
+	profiling = false;
+#endif
+}
+
+bool ASScriptLanguage::is_profiling() const {
+#ifdef DEBUG_ENABLED
+	return profiling;
+#else
+	return false;
+#endif
+}
+
+void ASScriptLanguage::profile_function(const StringName &p_signature, uint64_t p_usec) {
+#ifdef DEBUG_ENABLED
+	MutexLock lock(profile_mutex);
+	// 采样已停止时不得再累加：call_function 路径已用 is_profiling() 预筛，
+	// 但直接调用（含测试）仍需此处兜底，否则会污染停止后的历史数据。
+	if (!profiling) {
+		return;
+	}
+	ProfileEntry &entry = profile_data[p_signature];
+	entry.call_count++;
+	entry.total_time += p_usec;
+	entry.frame_call_count++;
+	entry.frame_total_time += p_usec;
+#endif
 }
 
 int ASScriptLanguage::profiling_get_accumulated_data(ProfilingInfo *p_info_arr, int p_info_max) {
-	return 0;
+	int current = 0;
+#ifdef DEBUG_ENABLED
+	MutexLock lock(profile_mutex);
+	for (const KeyValue<StringName, ProfileEntry> &kv : profile_data) {
+		if (current >= p_info_max) {
+			break;
+		}
+		ProfilingInfo &info = p_info_arr[current];
+		info.signature = kv.key;
+		info.call_count = kv.value.call_count;
+		info.total_time = kv.value.total_time;
+		// v1 不拆分嵌套 AS→AS 调用，自身耗时即总耗时。
+		info.self_time = kv.value.total_time;
+		// v1 不统计 AS→Godot 原生调用。
+		info.internal_time = 0;
+		current++;
+	}
+#endif
+	return current;
 }
 
 int ASScriptLanguage::profiling_get_frame_data(ProfilingInfo *p_info_arr, int p_info_max) {
-	return 0;
+	int current = 0;
+#ifdef DEBUG_ENABLED
+	MutexLock lock(profile_mutex);
+	for (const KeyValue<StringName, ProfileEntry> &kv : profile_data) {
+		if (current >= p_info_max) {
+			break;
+		}
+		if (kv.value.last_frame_call_count == 0) {
+			continue;
+		}
+		ProfilingInfo &info = p_info_arr[current];
+		info.signature = kv.key;
+		info.call_count = kv.value.last_frame_call_count;
+		info.total_time = kv.value.last_frame_total_time;
+		info.self_time = kv.value.last_frame_total_time;
+		info.internal_time = 0;
+		current++;
+	}
+#endif
+	return current;
 }
