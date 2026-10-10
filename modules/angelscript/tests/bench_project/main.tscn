@@ -1,0 +1,18 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://bench_driver.gd" id="1_driver"]
+[ext_resource type="Script" path="res://bench_gd.gd" id="2_gd"]
+[ext_resource type="Script" path="res://BenchCs.cs" id="3_cs"]
+[ext_resource type="Script" path="res://bench_as.as" id="4_as"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_driver")
+
+[node name="BenchGD" type="Node" parent="."]
+script = ExtResource("2_gd")
+
+[node name="BenchCS" type="Node" parent="."]
+script = ExtResource("3_cs")
+
+[node name="BenchAS" type="Node" parent="."]
+script = ExtResource("4_as")
