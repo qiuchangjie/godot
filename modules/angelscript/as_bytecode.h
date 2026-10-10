@@ -40,7 +40,9 @@
 
 // `.asb` 容器头版本。仅描述容器本身，与 AngelScript 模块 ABI 版本无关
 // （ABI/签名/回退策略由业务层 manifest 负责）。
-constexpr uint32_t AS_BYTECODE_FORMAT_VERSION = 1;
+// v1 -> v2：Vector2/3/2i/3i 改用原生存储（槽布局由 Variant 变为原生 T），
+// 旧字节码的存储槽布局不兼容，必须显式拒绝而非静默加载。
+constexpr uint32_t AS_BYTECODE_FORMAT_VERSION = 2;
 
 struct ASByteCode {
 	uint32_t format_version = 0;

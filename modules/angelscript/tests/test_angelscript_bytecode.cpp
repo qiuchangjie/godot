@@ -376,3 +376,28 @@ void compile_script_produces_loadable_bytecode() {
 	REQUIRE(loaded->load_bytecode(bytes, "user://asb_compile_bin/probe_bytecode.as", &error));
 	CHECK(loaded->is_script_valid());
 }
+
+void as_bytecode_rejects_stale_format_version() {
+	// v1 是原生值存储（P3）之前写出的 `.asb` 布局版本。容器版本提升后，旧布局的
+	// 字节码必须被显式拒绝，而不是被静默按新布局反序列化（只有 v1 的布局与
+	// 当前版本不兼容；此断言在版本仍为 1 时会因「被误接受」而失败）。
+	const uint32_t stale_version = 1;
+
+	Vector<StringName> types;
+	types.push_back(StringName("Node"));
+	Vector<uint8_t> payload;
+	payload.push_back(0x01);
+	Vector<uint8_t> bytes = as_bytecode_pack(StringName("Node"), types, payload);
+	REQUIRE(bytes.size() >= 16);
+
+	// 容器头偏移 8..11 为小端 u32 的 format_version，改写为旧版本。
+	bytes.write[8] = (uint8_t)(stale_version & 0xFF);
+	bytes.write[9] = (uint8_t)((stale_version >> 8) & 0xFF);
+	bytes.write[10] = (uint8_t)((stale_version >> 16) & 0xFF);
+	bytes.write[11] = (uint8_t)((stale_version >> 24) & 0xFF);
+
+	ASByteCode out;
+	String err;
+	CHECK_EQ(as_bytecode_unpack(bytes, out, &err), ERR_INVALID_DATA);
+	CHECK_FALSE(err.is_empty());
+}
