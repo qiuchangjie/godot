@@ -31,6 +31,7 @@
 #include "as_binding_value_types.h"
 
 #include "as_binding_decl.h"
+#include "as_binding_native_value_ops.h"
 
 #include "core/os/memory.h"
 #include "core/string/string_name.h"
@@ -325,6 +326,9 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		}
 		bool is_const = Variant::is_builtin_method_const(p_type, mn);
 		String decl = ret + " " + String(mn) + "(" + args + ")" + (is_const ? " const" : "");
+		if (ASNativeValueOps::try_add_method(p_engine, p_name, p_type, mn, decl)) {
+			continue; // 已原生注册，跳过 generic 跳板。
+		}
 		ASValueBinding *b = memnew(ASValueBinding);
 		b->kind = VT_METHOD;
 		b->type = p_type;
@@ -419,6 +423,10 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		if (!ev) {
 			continue;
 		}
+		String decl = rt_name + " " + BIN_OP_NAMES[i] + "(const " + p_name + " &in other) const";
+		if (ASNativeValueOps::try_add_op(p_engine, p_name, p_type, BIN_OP_NAMES[i], decl)) {
+			continue; // 已原生注册，跳过 generic 跳板。
+		}
 		ASValueBinding *b = memnew(ASValueBinding);
 		b->kind = VT_OP;
 		b->type = p_type;
@@ -427,21 +435,24 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		b->return_kind = kind_of_type(rt);
 		b->param_kinds.push_back(kind_of_type(p_type));
 		b->arg_count = 1;
-		add_method(p_engine, cname, rt_name + " " + BIN_OP_NAMES[i] + "(const " + p_name + " &in other) const", b);
+		add_method(p_engine, cname, decl, b);
 	}
 	{
 		Variant::Type rt = Variant::get_operator_return_type(Variant::OP_EQUAL, p_type, p_type);
 		Variant::ValidatedOperatorEvaluator ev = Variant::get_validated_operator_evaluator(Variant::OP_EQUAL, p_type, p_type);
 		if (rt == Variant::BOOL && ev) {
-			ASValueBinding *b = memnew(ASValueBinding);
-			b->kind = VT_OP;
-			b->type = p_type;
-			b->op_eval = ev;
-			b->return_type = Variant::BOOL;
-			b->return_kind = AS_KIND_BOOL;
-			b->param_kinds.push_back(kind_of_type(p_type));
-			b->arg_count = 1;
-			add_method(p_engine, cname, "bool opEquals(const " + p_name + " &in other) const", b);
+			String decl = "bool opEquals(const " + p_name + " &in other) const";
+			if (!ASNativeValueOps::try_add_op(p_engine, p_name, p_type, "opEquals", decl)) {
+				ASValueBinding *b = memnew(ASValueBinding);
+				b->kind = VT_OP;
+				b->type = p_type;
+				b->op_eval = ev;
+				b->return_type = Variant::BOOL;
+				b->return_kind = AS_KIND_BOOL;
+				b->param_kinds.push_back(kind_of_type(p_type));
+				b->arg_count = 1;
+				add_method(p_engine, cname, decl, b);
+			}
 		}
 	}
 }
