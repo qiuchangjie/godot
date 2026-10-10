@@ -131,6 +131,13 @@ R thunk_method1_scalar(const Variant *self, const Variant *arg) {
 	return (R)(((const T &)*self).*M)((const T &)*arg);
 }
 
+// 单参对象方法：形参为同类型值对象，返回新值类型对象，走内存返回（见 spec §5）。
+template <typename T, typename R, auto M>
+void thunk_method1_obj(Variant *ret, const Variant *self, const Variant *arg) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Variant((R)(((const T &)*self).*M)((const T &)*arg));
+}
+
 } // namespace
 
 namespace ASNativeValueOps {
@@ -198,6 +205,9 @@ bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Varian
 			if (m == "distance_squared_to") {
 				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::distance_squared_to>);
 			}
+			if (m == "cross") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::cross>);
+			}
 			break;
 		case Variant::VECTOR3:
 			if (m == "length") {
@@ -217,6 +227,9 @@ bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Varian
 			}
 			if (m == "distance_squared_to") {
 				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector3, double, &Vector3::distance_squared_to>);
+			}
+			if (m == "cross") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector3, Vector3, &Vector3::cross>);
 			}
 			break;
 		case Variant::VECTOR2I:

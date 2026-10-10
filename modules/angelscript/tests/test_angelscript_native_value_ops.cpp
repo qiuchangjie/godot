@@ -192,3 +192,21 @@ void as_native_vo_method_core() {
 	CHECK(out > 0.0);
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
+
+void as_native_vo_cross() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	// 用 `p.cross(q).z` 直接取临时对象的成员，避免 `Vector3 c3 = ...` 触发已原生的 opAssign 污染计数（同 T9 裁定）。
+	if (!run_double(
+				"double main() {"
+				"  Vector2 a(1, 0); Vector2 b(0, 1);"
+				"  double c2 = a.cross(b);"
+				"  Vector3 p(1, 0, 0); Vector3 q(0, 1, 0);"
+				"  return c2 + p.cross(q).z;"
+				"}",
+				&out)) {
+		return;
+	}
+	CHECK(nearly(out, 2.0));
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
