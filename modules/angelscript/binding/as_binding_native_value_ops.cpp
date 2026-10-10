@@ -62,19 +62,18 @@ struct OpDiv {
 	static T apply(const T &p_a, const T &p_b) { return p_a / p_b; }
 };
 
-// 二元运算：返回新对象。返回值为 sizeof(Variant)，按平台“内存返回”约定，
-// ret 是 AS 传入的隐藏返回缓冲（见 spec §4.3 / §7.1）。
+// 二元运算：返回新对象。原生存储下 T 为非 POD（含构造/析构/赋值/拷贝构造子标志），
+// AS 以“内存返回”约定传入隐藏返回缓冲 ret（见 spec §4.3 / §7.1）。
 template <typename T, typename Op>
-void thunk_binop(Variant *ret, const Variant *self, const Variant *other) {
+void thunk_binop(T *ret, const T *self, const T *other) {
 	ASNativeValueOps::note_thunk_call();
-	new (ret) Variant(Op::apply((const T &)*self, (const T &)*other));
+	new (ret) T(Op::apply(*self, *other));
 }
 
-// opAssign：原地改写 self 的 Variant 存储。AS 侧声明为返回引用，
+// opAssign：原地改写 self 的原生存储。AS 侧声明为返回引用，
 // 故原生函数返回 self 的地址以匹配引用返回的 ABI（见 spec §4.4）。
 template <typename T>
-Variant *thunk_assign(Variant *self, const Variant *other) {
-	(void)sizeof(T);
+T *thunk_assign(T *self, const T *other) {
 	ASNativeValueOps::note_thunk_call();
 	*self = *other;
 	return self;
@@ -82,9 +81,9 @@ Variant *thunk_assign(Variant *self, const Variant *other) {
 
 // opEquals：比较两个存储的原生值。AS 侧声明为返回 bool，按值返回即可（见 spec §4.5）。
 template <typename T>
-bool thunk_equals(const Variant *self, const Variant *other) {
+bool thunk_equals(const T *self, const T *other) {
 	ASNativeValueOps::note_thunk_call();
-	return (const T &)*self == (const T &)*other;
+	return *self == *other;
 }
 
 // 按运算符名取该类型的原生 thunk 函数指针；未覆盖的运算符返回 nullptr。
@@ -113,51 +112,51 @@ void *thunk_for_op(const String &p_op) {
 
 // 无参标量方法：直接返回原生标量（见 spec §5）。
 template <typename T, typename R, auto M>
-R thunk_method_scalar(const Variant *self) {
+R thunk_method_scalar(const T *self) {
 	ASNativeValueOps::note_thunk_call();
-	return (R)(((const T &)*self).*M)();
+	return (R)((self->*M)());
 }
 
 // 无参对象方法：返回新值类型对象，走内存返回（见 spec §5）。
 template <typename T, typename R, auto M>
-void thunk_method_obj(Variant *ret, const Variant *self) {
+void thunk_method_obj(T *ret, const T *self) {
 	ASNativeValueOps::note_thunk_call();
-	new (ret) Variant((R)(((const T &)*self).*M)());
+	new (ret) T((R)((self->*M)()));
 }
 
 // 单参标量方法：形参为同类型值对象（按 const 引用传入，见 spec §5）。
 template <typename T, typename R, auto M>
-R thunk_method1_scalar(const Variant *self, const Variant *arg) {
+R thunk_method1_scalar(const T *self, const T *arg) {
 	ASNativeValueOps::note_thunk_call();
-	return (R)(((const T &)*self).*M)((const T &)*arg);
+	return (R)((self->*M)(*arg));
 }
 
 // 单参对象方法：形参为同类型值对象，返回新值类型对象，走内存返回（见 spec §5）。
 template <typename T, typename R, auto M>
-void thunk_method1_obj(Variant *ret, const Variant *self, const Variant *arg) {
+void thunk_method1_obj(T *ret, const T *self, const T *arg) {
 	ASNativeValueOps::note_thunk_call();
-	new (ret) Variant((R)(((const T &)*self).*M)((const T &)*arg));
+	new (ret) T((R)((self->*M)(*arg)));
 }
 
 // 单参对象+标量方法：形参为同类型值对象与实数权重，返回新值类型对象（见 spec §5）。
 template <typename T, typename R, auto M>
-void thunk_method1_obj_f(Variant *ret, const Variant *self, const Variant *arg, double weight) {
+void thunk_method1_obj_f(T *ret, const T *self, const T *arg, double weight) {
 	ASNativeValueOps::note_thunk_call();
-	new (ret) Variant((R)(((const T &)*self).*M)((const T &)*arg, (real_t)weight));
+	new (ret) T((R)((self->*M)(*arg, (real_t)weight)));
 }
 
 // 双参对象方法：两个同类型值对象形参，返回新值类型对象（见 spec §5）。
 template <typename T, typename R, auto M>
-void thunk_method2_obj(Variant *ret, const Variant *self, const Variant *a, const Variant *b) {
+void thunk_method2_obj(T *ret, const T *self, const T *a, const T *b) {
 	ASNativeValueOps::note_thunk_call();
-	new (ret) Variant((R)(((const T &)*self).*M)((const T &)*a, (const T &)*b));
+	new (ret) T((R)((self->*M)(*a, *b)));
 }
 
 // 单标量参对象方法：形参为实数，返回新值类型对象（见 spec §5）。
 template <typename T, typename R, auto M>
-void thunk_method_f_obj(Variant *ret, const Variant *self, double arg) {
+void thunk_method_f_obj(T *ret, const T *self, double arg) {
 	ASNativeValueOps::note_thunk_call();
-	new (ret) Variant((R)(((const T &)*self).*M)((real_t)arg));
+	new (ret) T((R)((self->*M)((real_t)arg)));
 }
 
 } // namespace
@@ -178,7 +177,6 @@ bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::T
 	(void)p_decl;
 	return false;
 #else
-	return false; // P3 Task3：先走存储感知 generic，Task4 再启用原生快路径。
 	void *fn = nullptr;
 	switch (p_type) {
 		case Variant::VECTOR2:
@@ -231,7 +229,6 @@ bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Varian
 	(void)p_decl;
 	return false;
 #else
-	return false; // P3 Task3：先走存储感知 generic，Task4 再启用原生快路径。
 	const String m = String(p_method);
 	switch (p_type) {
 		case Variant::VECTOR2:

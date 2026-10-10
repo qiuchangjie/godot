@@ -423,3 +423,13 @@ void as_native_vo_native_storage_round_trip() {
 	)", &out));
 	CHECK(nearly(out, 30.0));
 }
+
+void as_native_vo_native_fast_path_active() {
+	if (!ASNativeValueStorage::is_native_storage_type(Variant::VECTOR2)) {
+		return; // 未启用平台跳过：无原生快路径。
+	}
+	ASNativeValueOps::reset_native_thunk_calls();
+	double out = 0.0;
+	CHECK(run_double("double main() { Vector2 a(1, 2); Vector2 b(3, 4); Vector2 c = a + b; return c.length(); }", &out));
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0); // opAdd 与 length 均命中原生 thunk
+}
