@@ -42,6 +42,7 @@ void as_native_vo_integer_vectors();
 void as_native_vo_op_equals();
 void as_native_vo_method_core();
 void as_native_vo_cross();
+void as_native_vo_geometry();
 
 #ifndef ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
 
@@ -75,6 +76,10 @@ TEST_CASE("[AngelScript] native value ops method core") {
 
 TEST_CASE("[AngelScript] native value ops cross") {
 	as_native_vo_cross();
+}
+
+TEST_CASE("[AngelScript] native value ops geometry") {
+	as_native_vo_geometry();
 }
 
 #endif // ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL

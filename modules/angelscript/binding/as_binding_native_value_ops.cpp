@@ -138,6 +138,27 @@ void thunk_method1_obj(Variant *ret, const Variant *self, const Variant *arg) {
 	new (ret) Variant((R)(((const T &)*self).*M)((const T &)*arg));
 }
 
+// 单参对象+标量方法：形参为同类型值对象与实数权重，返回新值类型对象（见 spec §5）。
+template <typename T, typename R, auto M>
+void thunk_method1_obj_f(Variant *ret, const Variant *self, const Variant *arg, double weight) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Variant((R)(((const T &)*self).*M)((const T &)*arg, (real_t)weight));
+}
+
+// 双参对象方法：两个同类型值对象形参，返回新值类型对象（见 spec §5）。
+template <typename T, typename R, auto M>
+void thunk_method2_obj(Variant *ret, const Variant *self, const Variant *a, const Variant *b) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Variant((R)(((const T &)*self).*M)((const T &)*a, (const T &)*b));
+}
+
+// 单标量参对象方法：形参为实数，返回新值类型对象（见 spec §5）。
+template <typename T, typename R, auto M>
+void thunk_method_f_obj(Variant *ret, const Variant *self, double arg) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Variant((R)(((const T &)*self).*M)((real_t)arg));
+}
+
 } // namespace
 
 namespace ASNativeValueOps {
@@ -208,6 +229,48 @@ bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Varian
 			if (m == "cross") {
 				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::cross>);
 			}
+			if (m == "angle") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector2, double, &Vector2::angle>);
+			}
+			if (m == "angle_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::angle_to>);
+			}
+			if (m == "angle_to_point") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::angle_to_point>);
+			}
+			if (m == "direction_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector2, Vector2, &Vector2::direction_to>);
+			}
+			if (m == "project") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector2, Vector2, &Vector2::project>);
+			}
+			if (m == "slide") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector2, Vector2, &Vector2::slide>);
+			}
+			if (m == "bounce") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector2, Vector2, &Vector2::bounce>);
+			}
+			if (m == "reflect") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector2, Vector2, &Vector2::reflect>);
+			}
+			if (m == "lerp") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj_f<Vector2, Vector2, &Vector2::lerp>);
+			}
+			if (m == "slerp") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj_f<Vector2, Vector2, &Vector2::slerp>);
+			}
+			if (m == "move_toward") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj_f<Vector2, Vector2, &Vector2::move_toward>);
+			}
+			if (m == "clamp") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method2_obj<Vector2, Vector2, &Vector2::clamp>);
+			}
+			if (m == "rotated") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_f_obj<Vector2, Vector2, &Vector2::rotated>);
+			}
+			if (m == "posmod") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_f_obj<Vector2, Vector2, &Vector2::posmod>);
+			}
 			break;
 		case Variant::VECTOR3:
 			if (m == "length") {
@@ -230,6 +293,36 @@ bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Varian
 			}
 			if (m == "cross") {
 				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector3, Vector3, &Vector3::cross>);
+			}
+			if (m == "angle_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector3, double, &Vector3::angle_to>);
+			}
+			if (m == "direction_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector3, Vector3, &Vector3::direction_to>);
+			}
+			if (m == "project") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector3, Vector3, &Vector3::project>);
+			}
+			if (m == "slide") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector3, Vector3, &Vector3::slide>);
+			}
+			if (m == "bounce") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector3, Vector3, &Vector3::bounce>);
+			}
+			if (m == "reflect") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj<Vector3, Vector3, &Vector3::reflect>);
+			}
+			if (m == "lerp") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj_f<Vector3, Vector3, &Vector3::lerp>);
+			}
+			if (m == "slerp") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj_f<Vector3, Vector3, &Vector3::slerp>);
+			}
+			if (m == "move_toward") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_obj_f<Vector3, Vector3, &Vector3::move_toward>);
+			}
+			if (m == "clamp") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method2_obj<Vector3, Vector3, &Vector3::clamp>);
 			}
 			break;
 		case Variant::VECTOR2I:

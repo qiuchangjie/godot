@@ -210,3 +210,24 @@ void as_native_vo_cross() {
 	CHECK(nearly(out, 2.0));
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
+
+void as_native_vo_geometry() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	// 用临时对象成员访问避免 `Vector2 r = ...` 触发已原生 opAssign 污染计数（同 T9 裁定）。
+	if (!run_double(
+				"double main() {"
+				"  Vector2 a(1, 0); Vector2 b(0, 1);"
+				"  double ang = a.angle();"
+				"  double a2 = a.angle_to(b);"
+				"  double rx = a.reflect(Vector2(0, 1)).x;"
+				"  double lx = a.lerp(b, 0.5).x;"
+				"  double ly = a.lerp(b, 0.5).y;"
+				"  return ang + a2 + rx + lx + ly;"
+				"}",
+				&out)) {
+		return;
+	}
+	CHECK(nearly(out, 1.5707963267948966));
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
