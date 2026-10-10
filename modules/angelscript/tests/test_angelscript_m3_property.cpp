@@ -273,7 +273,7 @@ void as_m3_property_roundtrip() {
 			"}\n";
 	String err;
 	REQUIRE_MESSAGE(script->compile_source(src, path, &err), err);
-	REQUIRE(script->is_valid());
+	REQUIRE(script->is_script_valid());
 
 	Node *owner = memnew(Node);
 	ScriptInstance *inst = script->instance_create(owner);

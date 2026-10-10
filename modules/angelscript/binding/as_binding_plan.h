@@ -42,7 +42,7 @@
 struct ASBindingMethod {
 	String name;
 	String as_decl;
-	MethodBind *bind = nullptr;
+	const MethodBind *bind = nullptr;
 	bool is_static = false;
 	// 跳板按 AS_KIND_* 决定如何把实参编组为 Variant；由 ASBindingDecl::resolve 产出，与 as_decl 同源。
 	Vector<ASBindingKind> param_kinds;

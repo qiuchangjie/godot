@@ -63,7 +63,7 @@ void as_script_parses_base_type_and_class_name() {
 	if (!script.is_valid()) {
 		return;
 	}
-	CHECK(script->is_valid());
+	CHECK(script->is_script_valid());
 	CHECK(script->get_instance_base_type() == StringName("Node"));
 	CHECK(script->get_global_name() == StringName()); // D2：本阶段不做全局类名。
 	CHECK(script->can_instantiate());
@@ -87,7 +87,7 @@ void as_script_tolerates_utf8_bom_and_crlf() {
 	if (!script.is_valid()) {
 		return;
 	}
-	CHECK(script->is_valid());
+	CHECK(script->is_script_valid());
 	CHECK(script->get_instance_base_type() == StringName("Node"));
 }
 
@@ -98,7 +98,7 @@ void as_script_rejects_missing_base_directive() {
 	if (!script.is_valid()) {
 		return;
 	}
-	CHECK_FALSE(script->is_valid());
+	CHECK_FALSE(script->is_script_valid());
 	CHECK(error.contains("godot_base"));
 }
 
@@ -109,7 +109,7 @@ void as_script_rejects_unknown_base_type() {
 	if (!script.is_valid()) {
 		return;
 	}
-	CHECK_FALSE(script->is_valid());
+	CHECK_FALSE(script->is_script_valid());
 	CHECK_FALSE(error.is_empty());
 }
 
@@ -120,7 +120,7 @@ void as_script_rejects_class_name_that_does_not_match_file_name() {
 	if (!script.is_valid()) {
 		return;
 	}
-	CHECK_FALSE(script->is_valid());
+	CHECK_FALSE(script->is_script_valid());
 	CHECK_FALSE(error.is_empty());
 }
 
@@ -131,7 +131,7 @@ void as_script_rejects_syntax_errors() {
 	if (!script.is_valid()) {
 		return;
 	}
-	CHECK_FALSE(script->is_valid());
+	CHECK_FALSE(script->is_script_valid());
 	CHECK_FALSE(error.is_empty());
 	CHECK(script->instance_create(nullptr) == nullptr);
 }
@@ -143,7 +143,7 @@ void as_script_rejects_empty_and_whitespace_source() {
 	if (!empty.is_valid()) {
 		return;
 	}
-	CHECK_FALSE(empty->is_valid());
+	CHECK_FALSE(empty->is_script_valid());
 	CHECK(error.contains("godot_base"));
 
 	error = String();
@@ -152,7 +152,7 @@ void as_script_rejects_empty_and_whitespace_source() {
 	if (!blank.is_valid()) {
 		return;
 	}
-	CHECK_FALSE(blank->is_valid());
+	CHECK_FALSE(blank->is_script_valid());
 	CHECK_FALSE(error.is_empty());
 }
 
@@ -170,7 +170,7 @@ void as_script_rejects_directive_after_line_10() {
 	if (!script.is_valid()) {
 		return;
 	}
-	CHECK_FALSE(script->is_valid());
+	CHECK_FALSE(script->is_script_valid());
 	CHECK(error.contains("godot_base"));
 }
 
@@ -183,7 +183,7 @@ void as_script_clear_resets_source_code() {
 	REQUIRE(script->has_source_code());
 
 	script->clear();
-	CHECK_FALSE(script->is_valid());
+	CHECK_FALSE(script->is_script_valid());
 	CHECK_FALSE(script->has_source_code());
 	CHECK(script->get_source_code().is_empty());
 }
@@ -221,7 +221,7 @@ void as_script_loads_through_resource_loader_from_user_path() {
 	Ref<ASScript> script = res;
 	REQUIRE(script.is_valid());
 	if (script.is_valid()) {
-		CHECK(script->is_valid());
+		CHECK(script->is_script_valid());
 		CHECK(script->get_instance_base_type() == StringName("Node"));
 		// 类名由路径推导（hero.as → hero），源码里的 class hero 必须与之匹配。
 		CHECK(script->has_method("_ready"));
@@ -264,7 +264,7 @@ void as_script_loader_ignores_cache_without_cyclic_conflict() {
 	CHECK(res.is_valid());
 	Ref<ASScript> reloaded = res;
 	if (reloaded.is_valid()) {
-		CHECK(reloaded->is_valid());
+		CHECK(reloaded->is_script_valid());
 		CHECK(reloaded->has_method("_ready"));
 	}
 
@@ -279,8 +279,8 @@ void as_script_reload_recompiles_from_updated_source() {
 	if (!script.is_valid()) {
 		return;
 	}
-	REQUIRE(script->is_valid());
-	if (!script->is_valid()) {
+	REQUIRE(script->is_script_valid());
+	if (!script->is_script_valid()) {
 		return;
 	}
 	CHECK(script->has_method("_ready"));
@@ -290,7 +290,7 @@ void as_script_reload_recompiles_from_updated_source() {
 	// 若 compile_source() 不先拷贝再 clear()，这里会因 p_source 被清空而编译失败。这是该修复的回归守卫。
 	script->set_source_code("// godot_base: Node\nclass enemy_spawner {\n\tvoid _ready() {}\n\tvoid extra_step() {}\n}\n");
 	CHECK(script->reload() == OK);
-	CHECK(script->is_valid());
+	CHECK(script->is_script_valid());
 	CHECK(script->has_method("extra_step"));
 }
 
@@ -303,8 +303,8 @@ void as_script_hot_reload_reattaches_and_refreshes() {
 	if (!script.is_valid()) {
 		return;
 	}
-	REQUIRE(script->is_valid());
-	if (!script->is_valid()) {
+	REQUIRE(script->is_script_valid());
+	if (!script->is_script_valid()) {
 		return;
 	}
 

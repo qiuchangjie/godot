@@ -184,7 +184,7 @@ void as_m3_signal_emit_delivered() {
 			"}\n";
 	String err;
 	REQUIRE_MESSAGE(script->compile_source(src, path, &err), err);
-	if (!script->is_valid()) {
+	if (!script->is_script_valid()) {
 		// doctest 无异常：REQUIRE 失败后仍会继续执行，必须显式返回，
 		// 否则下面的空指针解引用会把整个测试进程打崩。
 		return;

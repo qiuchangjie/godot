@@ -41,7 +41,7 @@ static Ref<ASScript> _make_script(const String &p_class, const String &p_body) {
 	String error;
 	const String source = "// godot_base: Node\nclass " + p_class + " {\n" + p_body + "\n}\n";
 	script->compile_source(source, "res://" + p_class + ".as", &error);
-	CHECK_MESSAGE(script->is_valid(), error);
+	CHECK_MESSAGE(script->is_script_valid(), error);
 	return script;
 }
 
@@ -183,7 +183,7 @@ void as_instance_requires_default_constructor() {
 	if (!script.is_valid()) {
 		return;
 	}
-	REQUIRE(script->is_valid());
+	REQUIRE(script->is_script_valid());
 	CHECK(script->instance_create(nullptr) == nullptr);
 }
 
@@ -198,8 +198,8 @@ void as_instance_scalar_properties_round_trip() {
 	if (!script.is_valid()) {
 		return;
 	}
-	REQUIRE(script->is_valid());
-	if (!script->is_valid()) {
+	REQUIRE(script->is_script_valid());
+	if (!script->is_script_valid()) {
 		return;
 	}
 

@@ -20,7 +20,7 @@
   - `--dump-angelscript-api <dir>`：把当前绑定面导出为 `angelscript_api.d.as`（声明，首行为内容哈希）与 `angelscript_unbound.txt`（不可绑定清单）。
   - `--compile-angelscript [<output_dir>]`：扫描 `res://` 下的 `.as` 源文件，逐个离线编译为 `.asb` 字节码容器（默认输出到当前目录）。
 
-尚未提供（后续里程碑）：跨语言通道的对象/字符串回调编组（`_input` 等带参回调仍不派发）、协程（await）、编辑器语言服务与断点调试（`validate()` / `find_function()` / `make_function()` 等暂为 stub）、脚本内自定义类注册进 ClassDB。
+尚未提供（后续里程碑）：跨语言通道的对象/字符串回调编组（`_input` 等带参回调仍不派发）、协程（await）、编辑器语言服务（上游已将 `validate()` / `find_function()` 等迁往 `EditorLanguage`，AS 暂用默认实现；`make_function()` 为 stub）、脚本内自定义类注册进 ClassDB。
 
 ## 宿主桥（M5 互操作 L2）
 

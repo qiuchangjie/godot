@@ -96,7 +96,7 @@ TEST_CASE("[AngelScript] make_template returns a valid script boilerplate") {
 	// 骨架落盘后必须能通过编译：类名=文件名、基类指令齐全。
 	scr->set_path("res://my_node.as");
 	CHECK(scr->reload() == OK);
-	CHECK(scr->is_valid());
+	CHECK(scr->is_script_valid());
 }
 
 // 回归：编辑器给节点挂「刚创建、尚未编译」的 .as 时，Object::set_script() 会请求占位实例。
@@ -117,7 +117,7 @@ TEST_CASE("[AngelScript] placeholder_instance_create provides an instance for un
 	PlaceHolderScriptInstance *ph = scr->placeholder_instance_create(owner);
 	REQUIRE(ph != nullptr);
 	CHECK(ph->is_placeholder());
-	CHECK(ph->get_script() == scr);
+	CHECK(ph->get_script() == scr.ptr());
 	CHECK(ph->get_owner() == owner);
 
 	// 占位实例析构会回调脚本的 _placeholder_erased，必须能安全回收。

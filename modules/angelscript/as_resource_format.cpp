@@ -145,7 +145,7 @@ Error ASResourceFormatSaverASScript::save(const Ref<Resource> &p_resource, const
 	// 与 GDScript saver 一致：按需在保存后触发重载，编辑器才会刷新 Inspector 的导出属性；
 	// 缺这一步，修改 .as 后必须重开工程才能看到新属性。
 	if (ScriptServer::is_reload_scripts_on_save_enabled()) {
-		ASScriptLanguage::get_singleton()->reload_tool_script(script, true);
+		ASScriptLanguage::get_singleton()->reload_tool_script(script);
 	}
 	return OK;
 }

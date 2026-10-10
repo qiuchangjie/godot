@@ -211,7 +211,7 @@ void as_bytecode_load_matches_source_introspection() {
 	CAPTURE(error);
 	REQUIRE(binary_script->load_bytecode(bytes, "user://asb_pair_bin/probe_bytecode.as", &error));
 
-	CHECK(binary_script->is_valid());
+	CHECK(binary_script->is_script_valid());
 	CHECK_EQ(binary_script->get_instance_base_type(), StringName("Node"));
 	CHECK(binary_script->has_method(StringName("_ready")));
 	CHECK(binary_script->has_method(StringName("add")));
@@ -304,7 +304,7 @@ void as_bytecode_load_rejects_corrupted_payload() {
 		String load_error;
 		CHECK_FALSE(binary_script->load_bytecode(corrupted, vformat("user://asb_corrupt_bin/probe_bytecode_%d.as", i), &load_error));
 		CHECK_FALSE(load_error.is_empty());
-		CHECK_FALSE(binary_script->is_valid());
+		CHECK_FALSE(binary_script->is_script_valid());
 	}
 
 	// 失败后不得污染引擎：仍能正常编译源码脚本（另用不同路径，避免与 source_script 争用资源缓存）。
@@ -337,7 +337,7 @@ void resource_loader_loads_asb() {
 
 	Ref<ASScript> loaded_script = resource;
 	REQUIRE(loaded_script.is_valid());
-	CHECK(loaded_script->is_valid());
+	CHECK(loaded_script->is_script_valid());
 	CHECK_EQ(loaded_script->get_instance_base_type(), StringName("Node"));
 }
 
@@ -374,5 +374,5 @@ void compile_script_produces_loadable_bytecode() {
 	Ref<ASScript> loaded;
 	loaded.instantiate();
 	REQUIRE(loaded->load_bytecode(bytes, "user://asb_compile_bin/probe_bytecode.as", &error));
-	CHECK(loaded->is_valid());
+	CHECK(loaded->is_script_valid());
 }

@@ -38,6 +38,7 @@
 #include "core/debugger/engine_debugger.h"
 #include "core/debugger/script_debugger.h"
 #include "core/object/class_db.h"
+#include "core/object/editor_language.h"
 
 #include <angelscript.h>
 
@@ -133,14 +134,6 @@ Vector<String> ASScriptLanguage::get_string_delimiters() const {
 	return out;
 }
 
-bool ASScriptLanguage::validate(const String &p_script, const String &p_path, List<String> *r_functions, List<ScriptError> *r_errors, List<Warning> *r_warnings, HashSet<int> *r_safe_lines) const {
-	return true;
-}
-
-int ASScriptLanguage::find_function(const String &p_function, const String &p_code) const {
-	return -1;
-}
-
 String ASScriptLanguage::make_function(const String &p_class, const String &p_name, const PackedStringArray &p_args) const {
 	return String();
 }
@@ -221,7 +214,7 @@ String ASScriptLanguage::debug_parse_stack_level_expression(int p_level, const S
 void ASScriptLanguage::reload_all_scripts() {
 }
 
-void ASScriptLanguage::reload_scripts(const Array &p_scripts, bool p_soft_reload) {
+void ASScriptLanguage::reload_scripts(const Array &p_scripts) {
 #ifdef TOOLS_ENABLED
 	for (int i = 0; i < p_scripts.size(); i++) {
 		Object *obj = p_scripts[i];
@@ -229,23 +222,27 @@ void ASScriptLanguage::reload_scripts(const Array &p_scripts, bool p_soft_reload
 		if (scr.is_null()) {
 			continue;
 		}
-		// 与 GDScript 不同，soft/hard 都必须摘除实例：AS 实例持有模块内的
-		// asIScriptObject，重编译会 DiscardModule，不先摘除即悬垂。
-		scr->reload_with_instances(p_soft_reload);
+		// 上游已移除 soft/hard 重启参数；AS 实例持有模块内的 asIScriptObject，
+		// 重编译会 DiscardModule，必须先摘除实例再重编译，并保留属性状态。
+		scr->reload_with_instances(true);
 	}
 #endif
 }
 
-void ASScriptLanguage::reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) {
+void ASScriptLanguage::reload_tool_script(const Ref<Script> &p_script) {
 	Array scripts;
 	scripts.push_back(p_script);
-	reload_scripts(scripts, p_soft_reload);
+	reload_scripts(scripts);
 }
 
-void ASScriptLanguage::get_recognized_extensions(List<String> *p_extensions) const {
-	p_extensions->push_back(get_extension());
-	p_extensions->push_back("asb");
+#ifdef TOOLS_ENABLED
+EditorLanguage *ASScriptLanguage::get_editor_language() {
+	// AS 暂未提供编辑器语言服务；返回默认实现（validate/complete_code 等均为空或恒真），
+	// 与原 ScriptLanguage 上的 stub 行为等价。
+	static EditorLanguage default_editor_language;
+	return &default_editor_language;
 }
+#endif
 
 void ASScriptLanguage::get_public_functions(List<MethodInfo> *p_functions) const {
 }

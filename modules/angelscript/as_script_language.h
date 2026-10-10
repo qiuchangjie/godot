@@ -56,12 +56,14 @@ public:
 	virtual Vector<String> get_doc_comment_delimiters() const override;
 	virtual Vector<String> get_string_delimiters() const override;
 
-	virtual bool validate(const String &p_script, const String &p_path = "", List<String> *r_functions = nullptr, List<ScriptError> *r_errors = nullptr, List<Warning> *r_warnings = nullptr, HashSet<int> *r_safe_lines = nullptr) const override;
+#ifdef TOOLS_ENABLED
+	// 编辑器语言服务已从 ScriptLanguage 迁往 EditorLanguage；AS 暂未实现，返回默认实现。
+	virtual EditorLanguage *get_editor_language() override;
+#endif
+
 	virtual bool supports_builtin_mode() const override { return false; }
-	virtual int find_function(const String &p_function, const String &p_code) const override;
 	virtual String make_function(const String &p_class, const String &p_name, const PackedStringArray &p_args) const override;
 	virtual Ref<Script> make_template(const String &p_template, const String &p_class_name, const String &p_base_class_name) const override;
-	virtual void auto_indent_code(String &p_code, int p_from_line, int p_to_line) const override {}
 	virtual void add_global_constant(const StringName &p_variable, const Variant &p_value) override {}
 
 	// 照搬 GDScript 的模式（gdscript_editor.cpp:273-287）：调试器不活跃时直接返回 false。
@@ -79,10 +81,9 @@ public:
 	virtual String debug_parse_stack_level_expression(int p_level, const String &p_expression, int p_max_subitems = -1, int p_max_depth = -1) override;
 
 	virtual void reload_all_scripts() override;
-	virtual void reload_scripts(const Array &p_scripts, bool p_soft_reload) override;
-	virtual void reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) override;
+	virtual void reload_scripts(const Array &p_scripts) override;
+	virtual void reload_tool_script(const Ref<Script> &p_script) override;
 
-	virtual void get_recognized_extensions(List<String> *p_extensions) const override;
 	virtual void get_public_functions(List<MethodInfo> *p_functions) const override;
 	virtual void get_public_constants(List<Pair<String, Variant>> *p_constants) const override;
 	virtual void get_public_annotations(List<MethodInfo> *p_annotations) const override;

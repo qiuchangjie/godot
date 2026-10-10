@@ -165,10 +165,29 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		return false;
 	};
 
-	// 方法：no_inheritance=false（每个 AS 类型自包含），排除属性访问器以免重名。
+	// 上游把属性访问器重新并入了方法表（get_method_list 去掉了 p_exclude_from_properties），
+	// 这里按属性访问器名过滤，避免 get_*/set_* 作为方法注册、挤掉同名属性。
+	HashSet<StringName> accessor_names;
+	List<PropertyInfo> accessor_props;
+	ClassDB::get_property_list(p_class, &accessor_props, false);
+	for (const PropertyInfo &pi : accessor_props) {
+		const StringName getter = ClassDB::get_property_getter(p_class, pi.name);
+		const StringName setter = ClassDB::get_property_setter(p_class, pi.name);
+		if (getter != StringName()) {
+			accessor_names.insert(getter);
+		}
+		if (setter != StringName()) {
+			accessor_names.insert(setter);
+		}
+	}
+
+	// 方法：no_inheritance=false（每个 AS 类型自包含）。
 	List<MethodInfo> methods;
-	ClassDB::get_method_list(p_class, &methods, false, true);
+	ClassDB::get_method_list(p_class, &methods, false);
 	for (const MethodInfo &mi : methods) {
+		if (accessor_names.has(mi.name)) {
+			continue;
+		}
 		String decl, reason;
 		if (!ASBindingDecl::method_to_decl(mi, &decl, &reason)) {
 			ASUnboundEntry e;

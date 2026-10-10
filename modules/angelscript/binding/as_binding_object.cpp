@@ -56,7 +56,7 @@ struct ASObjectBinding {
 	};
 	Kind kind = KIND_METHOD;
 	StringName member;
-	MethodBind *bind = nullptr;
+	const MethodBind *bind = nullptr;
 	Vector<ASBindingKind> param_kinds;
 	ASBindingKind return_kind = AS_KIND_VOID;
 	// self 槽的语义：由所属类是否派生自 RefCounted 决定（spec §0 R3）。
