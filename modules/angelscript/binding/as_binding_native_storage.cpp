@@ -95,6 +95,27 @@ void op_add(Vector2 *ret, const Vector2 *self, const Vector2 *p_other) {
 	new (ret) Vector2(*self + *p_other);
 }
 
+void op_sub(Vector2 *ret, const Vector2 *self, const Vector2 *p_other) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2(*self - *p_other);
+}
+
+void op_mul(Vector2 *ret, const Vector2 *self, const Vector2 *p_other) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2(*self * *p_other);
+}
+
+void op_div(Vector2 *ret, const Vector2 *self, const Vector2 *p_other) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2(*self / *p_other);
+}
+
+// 标量返回（bool）：不涉及对象返回 ABI，签名 (self, other)。
+bool op_equals(const Vector2 *self, const Vector2 *p_other) {
+	ASNativeValueOps::note_thunk_call();
+	return *self == *p_other;
+}
+
 } // namespace
 
 namespace ASNativeValueStorage {
@@ -144,6 +165,10 @@ bool register_vector2_members(asIScriptEngine *p_engine) {
 	e->RegisterObjectMethod("Vector2", "double get_y() const property", asFUNCTION(get_y), asCALL_CDECL_OBJFIRST);
 	e->RegisterObjectMethod("Vector2", "void set_y(double) property", asFUNCTION(set_y), asCALL_CDECL_OBJFIRST);
 	e->RegisterObjectMethod("Vector2", "Vector2 opAdd(const Vector2 &in) const", asFUNCTION(op_add), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 opSub(const Vector2 &in) const", asFUNCTION(op_sub), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 opMul(const Vector2 &in) const", asFUNCTION(op_mul), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 opDiv(const Vector2 &in) const", asFUNCTION(op_div), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "bool opEquals(const Vector2 &in) const", asFUNCTION(op_equals), asCALL_CDECL_OBJFIRST);
 	return true;
 }
 
