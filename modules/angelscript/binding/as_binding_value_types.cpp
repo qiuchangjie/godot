@@ -31,6 +31,7 @@
 #include "as_binding_value_types.h"
 
 #include "as_binding_decl.h"
+#include "as_binding_native_value_ops.h"
 
 #include "core/os/memory.h"
 #include "core/string/string_name.h"
@@ -217,15 +218,22 @@ static bool render_args(const Vector<PropertyInfo> &p_args, String *r_args, Vect
 }
 
 // ---------- 单类型注册 ----------
-// 第一阶段：只注册类型骨架（asOBJ_VALUE）。必须先让所有值类型都存在，
+// 第一阶段：只注册类型骨架（asOBJ_VALUE，内建值类型另加 asOBJ_APP_CLASS）。必须先让所有值类型都存在，
 // 内省出的构造函数/方法签名里引用的其它值类型才能被 AS 解析；
 // 否则任一 Register* 失败都会让 asCScriptEngine 永久进入 configFailed。
-static void register_type_skeleton(asIScriptEngine *p_engine, const String &p_name, int p_size) {
+static void register_type_skeleton(asIScriptEngine *p_engine, const String &p_name, int p_size, bool p_native_app_class) {
 	CharString cname = p_name.utf8();
 	if (p_engine->GetTypeInfoByName(cname.get_data())) {
 		return; // 幂等。
 	}
-	p_engine->RegisterObjectType(cname.get_data(), p_size, asOBJ_VALUE);
+	// asOBJ_APP_CLASS 仅启用“按值返回/传参的原生 C++ 函数”合法；不带子标志 ⇒ 不改变脚本侧
+	// generic 的拷贝/析构/赋值语义（见 docs/superpowers/specs/2026-10-10-angelscript-vector-native-ops-design.md §4.1）。
+	// 只有需要原生 thunk 的 34 个内建值类型才加该标志；Variant / string 仍走纯 generic，不加。
+	asDWORD flags = asOBJ_VALUE;
+	if (p_native_app_class) {
+		flags |= asOBJ_APP_CLASS;
+	}
+	p_engine->RegisterObjectType(cname.get_data(), p_size, flags);
 }
 
 // 第二阶段：骨架齐备后注册构造/析构/方法/属性/索引/运算符。
@@ -252,10 +260,13 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 	}
 	{
 		// AS 没有 asBEHAVE_ASSIGNMENT；opAssign 作为运算符方法注册。
-		ASValueBinding *b = memnew(ASValueBinding);
-		b->kind = VT_ASSIGN;
-		b->type = p_type;
-		add_method(p_engine, cname, p_name + " &opAssign(const " + p_name + " &in)", b);
+		String decl = p_name + " &opAssign(const " + p_name + " &in)";
+		if (!ASNativeValueOps::try_add_op(p_engine, p_name, p_type, "opAssign", decl)) {
+			ASValueBinding *b = memnew(ASValueBinding);
+			b->kind = VT_ASSIGN;
+			b->type = p_type;
+			add_method(p_engine, cname, decl, b);
+		}
 	}
 
 	// 内省构造器（无参构造已由上面统一注册）。
@@ -323,6 +334,9 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		}
 		bool is_const = Variant::is_builtin_method_const(p_type, mn);
 		String decl = ret + " " + String(mn) + "(" + args + ")" + (is_const ? " const" : "");
+		if (ASNativeValueOps::try_add_method(p_engine, p_name, p_type, mn, decl)) {
+			continue; // 已原生注册，跳过 generic 跳板。
+		}
 		ASValueBinding *b = memnew(ASValueBinding);
 		b->kind = VT_METHOD;
 		b->type = p_type;
@@ -403,7 +417,9 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 
 	// 运算符：仅注册 (T, T) 形式的二元算术与相等比较。
 	static const Variant::Operator BIN_OPS[] = { Variant::OP_ADD, Variant::OP_SUBTRACT, Variant::OP_MULTIPLY, Variant::OP_DIVIDE };
-	static const char *BIN_OP_NAMES[] = { "opAdd", "opSubtract", "opMultiply", "opDivide" };
+	// AngelScript 的二元运算符方法名：加法 opAdd，减法 opSub，乘法 opMul，除法 opDiv
+	// （见 thirdparty/angelscript/source/as_compiler.cpp 的运算符名映射）。
+	static const char *BIN_OP_NAMES[] = { "opAdd", "opSub", "opMul", "opDiv" };
 	for (int i = 0; i < 4; i++) {
 		Variant::Type rt = Variant::get_operator_return_type(BIN_OPS[i], p_type, p_type);
 		if (rt == Variant::NIL) {
@@ -417,6 +433,10 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		if (!ev) {
 			continue;
 		}
+		String decl = rt_name + " " + BIN_OP_NAMES[i] + "(const " + p_name + " &in other) const";
+		if (ASNativeValueOps::try_add_op(p_engine, p_name, p_type, BIN_OP_NAMES[i], decl)) {
+			continue; // 已原生注册，跳过 generic 跳板。
+		}
 		ASValueBinding *b = memnew(ASValueBinding);
 		b->kind = VT_OP;
 		b->type = p_type;
@@ -425,21 +445,24 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		b->return_kind = kind_of_type(rt);
 		b->param_kinds.push_back(kind_of_type(p_type));
 		b->arg_count = 1;
-		add_method(p_engine, cname, rt_name + " " + BIN_OP_NAMES[i] + "(const " + p_name + " &in other) const", b);
+		add_method(p_engine, cname, decl, b);
 	}
 	{
 		Variant::Type rt = Variant::get_operator_return_type(Variant::OP_EQUAL, p_type, p_type);
 		Variant::ValidatedOperatorEvaluator ev = Variant::get_validated_operator_evaluator(Variant::OP_EQUAL, p_type, p_type);
 		if (rt == Variant::BOOL && ev) {
-			ASValueBinding *b = memnew(ASValueBinding);
-			b->kind = VT_OP;
-			b->type = p_type;
-			b->op_eval = ev;
-			b->return_type = Variant::BOOL;
-			b->return_kind = AS_KIND_BOOL;
-			b->param_kinds.push_back(kind_of_type(p_type));
-			b->arg_count = 1;
-			add_method(p_engine, cname, "bool opEquals(const " + p_name + " &in other) const", b);
+			String decl = "bool opEquals(const " + p_name + " &in other) const";
+			if (!ASNativeValueOps::try_add_op(p_engine, p_name, p_type, "opEquals", decl)) {
+				ASValueBinding *b = memnew(ASValueBinding);
+				b->kind = VT_OP;
+				b->type = p_type;
+				b->op_eval = ev;
+				b->return_type = Variant::BOOL;
+				b->return_kind = AS_KIND_BOOL;
+				b->param_kinds.push_back(kind_of_type(p_type));
+				b->arg_count = 1;
+				add_method(p_engine, cname, decl, b);
+			}
 		}
 	}
 }
@@ -589,10 +612,10 @@ Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 	};
 	// 第一阶段：先把全部值类型骨架注册好（含 Variant 与 AS 的 string）。
 	for (int i = 0; i < 34; i++) {
-		register_type_skeleton(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), sizeof(Variant));
+		register_type_skeleton(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), sizeof(Variant), true);
 	}
-	register_type_skeleton(p_engine, "Variant", sizeof(Variant));
-	register_type_skeleton(p_engine, "string", sizeof(void *));
+	register_type_skeleton(p_engine, "Variant", sizeof(Variant), false);
+	register_type_skeleton(p_engine, "string", sizeof(void *), false);
 
 	// 第二阶段：骨架齐备后做内省注册，签名里的类型引用才都能解析。
 	for (int i = 0; i < 34; i++) {
