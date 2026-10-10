@@ -31,6 +31,7 @@
 #include "as_binding_value_types.h"
 
 #include "as_binding_decl.h"
+#include "as_binding_native_storage.h"
 #include "as_binding_native_value_ops.h"
 
 #include "core/os/memory.h"
@@ -612,6 +613,9 @@ Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 	};
 	// 第一阶段：先把全部值类型骨架注册好（含 Variant 与 AS 的 string）。
 	for (int i = 0; i < 34; i++) {
+		if (TYPES[i] == Variant::VECTOR2 && ASNativeValueStorage::register_vector2_skeleton(p_engine)) {
+			continue; // 原生骨架已注册（throwaway spike）。
+		}
 		register_type_skeleton(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), sizeof(Variant), true);
 	}
 	register_type_skeleton(p_engine, "Variant", sizeof(Variant), false);
@@ -619,6 +623,9 @@ Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 
 	// 第二阶段：骨架齐备后做内省注册，签名里的类型引用才都能解析。
 	for (int i = 0; i < 34; i++) {
+		if (TYPES[i] == Variant::VECTOR2 && ASNativeValueStorage::register_vector2_members(p_engine)) {
+			continue; // 原生成员已注册（throwaway spike）。
+		}
 		register_type_members(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), TYPES[i]);
 	}
 	register_type_members(p_engine, "Variant", Variant::NIL);
