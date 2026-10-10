@@ -1,0 +1,18 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://main.as" id="1_main"]
+[ext_resource type="Script" path="res://binding_demo.as" id="2_binding"]
+[ext_resource type="Script" path="res://handle_demo.as" id="3_handle"]
+[ext_resource type="Script" path="res://signal_demo.as" id="4_signal"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_main")
+
+[node name="BindingDemo" type="Node" parent="."]
+script = ExtResource("2_binding")
+
+[node name="HandleDemo" type="Node" parent="."]
+script = ExtResource("3_handle")
+
+[node name="SignalDemo" type="Node" parent="."]
+script = ExtResource("4_signal")

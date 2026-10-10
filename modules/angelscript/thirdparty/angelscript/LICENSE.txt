@@ -1,0 +1,31 @@
+AngelCode Scripting Library (AngelScript) 2.38.0
+Copyright (c) 2003-2025 Andreas Jonsson
+
+This software is provided 'as-is', without any express or implied warranty.
+In no event will the authors be held liable for any damages arising from the
+use of this software.
+
+Permission is granted to anyone to use this software for any purpose, including
+commercial applications, and to alter it and redistribute it freely, subject to
+the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim
+   that you wrote the original software. If you use this software in a product,
+   an acknowledgment in the product documentation would be appreciated but is
+   not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+
+The original version of this library can be located at:
+http://www.angelcode.com/angelscript/
+
+Andreas Jonsson
+andreas@angelcode.com
+
+---------------------------------------------------------------------------
+说明：本目录是 AngelScript 官方 SDK 2.38.0 的 include/ 与 source/ 原样副本
+（来源 https://www.angelcode.com/angelscript/sdk/files/angelscript_2.38.0.zip）。
+官方 SDK 未单独提供 LICENSE 文件，许可全文取自各源文件头部内嵌的同一段文本。

@@ -1,0 +1,12 @@
+﻿<Project Sdk="Godot.NET.Sdk/4.7.0-local">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <PublishAot>true</PublishAot>
+    <Nullable>enable</Nullable>
+    <AssemblyName>R1AotSample</AssemblyName>
+    <RootNamespace>R1AotSample</RootNamespace>
+  </PropertyGroup>
+
+</Project>

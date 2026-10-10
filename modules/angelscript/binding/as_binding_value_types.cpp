@@ -1,0 +1,818 @@
+/**************************************************************************/
+/*  as_binding_value_types.cpp                                            */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#include "as_binding_value_types.h"
+
+#include "as_binding_decl.h"
+
+#include "core/os/memory.h"
+#include "core/string/string_name.h"
+#include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
+#include "core/templates/list.h"
+#include "core/variant/callable.h"
+#include "core/variant/variant_internal.h"
+
+#include <angelscript.h>
+#include <cstdint>
+#include <cstring>
+#include <new>
+
+// 跳板行为分类：决定 generic_value_call 如何解释 self/实参。
+enum ASValueBindingKind {
+	VT_CTOR_DEFAULT, // self = 待构造内存；无参构造
+	VT_CTOR_COPY, // arg0 = 同类型对象
+	VT_CTOR_ARGS, // argN = 内省构造器实参
+	VT_DTOR,
+	VT_ASSIGN, // arg0 = 同类型对象；返回 T&
+	VT_METHOD, // 内省内建方法
+	VT_MEMBER_GET, // 内省成员读
+	VT_MEMBER_SET, // 内省成员写
+	VT_INDEX_GET, // opIndex
+	VT_INDEX_SET, // opIndexAssign
+	VT_KEYED_GET, // opIndex(key)
+	VT_KEYED_SET, // opIndexAssign(value, key)
+	VT_OP, // 运算符
+	VT_CONV, // Variant -> 标量/String 转换
+	VT_NOOP, // 无操作（string 析构等）
+	VT_CTOR_FROM_STRING, // String(const string &in)
+	VT_STRING_DEFAULT, // string() -> 空串
+	VT_STRING_COPY, // string(const string &in)
+	VT_STRING_ASSIGN, // string &opAssign(const string &in)
+	VT_STRING_FROM_GODOT, // string(const String &in)
+	VT_STRING_LENGTH, // int64 length() const
+};
+
+// 绑定记录通过 asIScriptFunction::SetUserData 挂到函数上，跳板运行时取回。
+// 注册只发生一次（register_all 幂等），因此这些记录的生命周期与进程一致，不做释放。
+struct ASValueBinding {
+	ASValueBindingKind kind = VT_METHOD;
+	Variant::Type type = Variant::NIL;
+	Variant::Type return_type = Variant::NIL;
+	ASBindingKind return_kind = AS_KIND_VOID;
+	Vector<ASBindingKind> param_kinds;
+	int arg_count = 0;
+	Variant::ValidatedBuiltInMethod method = nullptr;
+	Variant::ValidatedOperatorEvaluator op_eval = nullptr;
+	Variant::ValidatedGetter member_get = nullptr;
+	Variant::ValidatedSetter member_set = nullptr;
+};
+
+static void attach_binding(asIScriptEngine *p_engine, int p_id, ASValueBinding *p_binding) {
+	if (p_id < 0 || !p_binding) {
+		return;
+	}
+	asIScriptFunction *f = p_engine->GetFunctionById(p_id);
+	if (f) {
+		f->SetUserData(p_binding);
+	}
+}
+
+// 通用调用约定没有 SetException，需通过当前执行上下文抛出。
+static void set_exception(const char *p_message) {
+	asIScriptContext *ctx = asGetActiveContext();
+	if (ctx) {
+		ctx->SetException(p_message);
+	}
+}
+
+static void add_method(asIScriptEngine *p_engine, const CharString &p_type, const String &p_decl, ASValueBinding *p_binding) {
+	CharString decl = p_decl.utf8();
+	int id = p_engine->RegisterObjectMethod(p_type.get_data(), decl.get_data(), asFUNCTION(ASBindingValueTypes::generic_value_call), asCALL_GENERIC);
+	attach_binding(p_engine, id, p_binding);
+}
+
+static void add_behaviour(asIScriptEngine *p_engine, const CharString &p_type, asEBehaviours p_behaviour, const String &p_decl, ASValueBinding *p_binding) {
+	CharString decl = p_decl.utf8();
+	int id = p_engine->RegisterObjectBehaviour(p_type.get_data(), p_behaviour, decl.get_data(), asFUNCTION(ASBindingValueTypes::generic_value_call), asCALL_GENERIC);
+	attach_binding(p_engine, id, p_binding);
+}
+
+// ---------- string 互操作 ----------
+// 本仓库的 AngelScript 2.38 不含内建 string 类型，且字符串字面量依赖
+// asIScriptEngine::RegisterStringFactory。工厂对象由我们定义：一个持有 Godot String 的
+// 驻留对象（intern），因此不会泄漏，也不需要（也不允许）在 AS 侧做引用计数。
+struct ASGodotStringObject {
+	String str;
+};
+
+static HashMap<String, ASGodotStringObject *> g_interned_strings;
+// 工厂指针集合：用于区分「字面量实参」（AS 直接压入工厂指针）与「变量实参」
+// （AS 压入保存指针的存储地址）。见 string_slot()。
+static HashSet<const ASGodotStringObject *> g_interned_string_ptrs;
+
+static const void *intern_string(const String &p_str) {
+	HashMap<String, ASGodotStringObject *>::Iterator it = g_interned_strings.find(p_str);
+	if (it) {
+		return it->value;
+	}
+	ASGodotStringObject *o = memnew(ASGodotStringObject);
+	o->str = p_str;
+	g_interned_strings.insert(p_str, o);
+	g_interned_string_ptrs.insert(o);
+	return o;
+}
+
+class ASGodotStringFactory : public asIStringFactory {
+public:
+	const void *GetStringConstant(const char *data, asUINT length) override {
+		return intern_string(String::utf8(data, (int)length));
+	}
+	int ReleaseStringConstant(const void * /*str*/) override {
+		return 0; // 驻留对象与进程同生命周期。
+	}
+	int GetRawStringData(const void *str, char *data, asUINT *length) const override {
+		if (!str) {
+			if (length) {
+				*length = 0;
+			}
+			return 0;
+		}
+		CharString utf8 = ((const ASGodotStringObject *)str)->str.utf8();
+		asUINT n = (asUINT)utf8.length();
+		if (data && length) {
+			asUINT copy = *length < n ? *length : n;
+			memcpy(data, utf8.get_data(), copy);
+		}
+		if (length) {
+			*length = n;
+		}
+		return 0;
+	}
+};
+
+static ASGodotStringFactory g_string_factory;
+
+// ---------- 渲染辅助 ----------
+static String param_type_name(Variant::Type p_type) {
+	if (p_type == Variant::NIL) {
+		return "Variant";
+	}
+	return ASBindingDecl::variant_type_to_as(p_type);
+}
+
+static ASBindingKind kind_of_type(Variant::Type p_type) {
+	switch (p_type) {
+		case Variant::BOOL:
+			return AS_KIND_BOOL;
+		case Variant::INT:
+			return AS_KIND_INT64;
+		case Variant::FLOAT:
+			return AS_KIND_DOUBLE;
+		case Variant::OBJECT:
+			// 值类型方法没有静态 class_name 可用（且 variant_type_to_as 不处理 OBJECT，
+			// 这类签名在 render_args 阶段就会被拒绝），此处仅为防御性填充：按“任意 Object”= 非拥有。
+			return AS_KIND_OBJECT_NONOWNING;
+		default:
+			return AS_KIND_VALUE; // NIL(Variant) 与全部内建值类型统一走 Variant 存储。
+	}
+}
+
+static bool render_args(const Vector<PropertyInfo> &p_args, String *r_args, Vector<ASBindingKind> *r_kinds) {
+	String args;
+	for (int i = 0; i < p_args.size(); i++) {
+		String name = param_type_name(p_args[i].type);
+		if (name.is_empty()) {
+			return false;
+		}
+		if (i > 0) {
+			args += ", ";
+		}
+		args += as_binding_render_param(name);
+		if (r_kinds) {
+			r_kinds->push_back(kind_of_type(p_args[i].type));
+		}
+	}
+	if (r_args) {
+		*r_args = args;
+	}
+	return true;
+}
+
+// ---------- 单类型注册 ----------
+// 第一阶段：只注册类型骨架（asOBJ_VALUE）。必须先让所有值类型都存在，
+// 内省出的构造函数/方法签名里引用的其它值类型才能被 AS 解析；
+// 否则任一 Register* 失败都会让 asCScriptEngine 永久进入 configFailed。
+static void register_type_skeleton(asIScriptEngine *p_engine, const String &p_name, int p_size) {
+	CharString cname = p_name.utf8();
+	if (p_engine->GetTypeInfoByName(cname.get_data())) {
+		return; // 幂等。
+	}
+	p_engine->RegisterObjectType(cname.get_data(), p_size, asOBJ_VALUE);
+}
+
+// 第二阶段：骨架齐备后注册构造/析构/方法/属性/索引/运算符。
+static void register_type_members(asIScriptEngine *p_engine, const String &p_name, Variant::Type p_type) {
+	CharString cname = p_name.utf8();
+
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_CTOR_DEFAULT;
+		b->type = p_type;
+		add_behaviour(p_engine, cname, asBEHAVE_CONSTRUCT, "void f()", b);
+	}
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_CTOR_COPY;
+		b->type = p_type;
+		add_behaviour(p_engine, cname, asBEHAVE_CONSTRUCT, "void f(const " + p_name + " &in)", b);
+	}
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_DTOR;
+		b->type = p_type;
+		add_behaviour(p_engine, cname, asBEHAVE_DESTRUCT, "void f()", b);
+	}
+	{
+		// AS 没有 asBEHAVE_ASSIGNMENT；opAssign 作为运算符方法注册。
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_ASSIGN;
+		b->type = p_type;
+		add_method(p_engine, cname, p_name + " &opAssign(const " + p_name + " &in)", b);
+	}
+
+	// 内省构造器（无参构造已由上面统一注册）。
+	List<MethodInfo> ctors;
+	Variant::get_constructor_list(p_type, &ctors);
+	for (const MethodInfo &mi : ctors) {
+		if (mi.arguments.is_empty()) {
+			continue;
+		}
+		String args;
+		Vector<ASBindingKind> kinds;
+		if (!render_args(mi.arguments, &args, &kinds)) {
+			continue;
+		}
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_CTOR_ARGS;
+		b->type = p_type;
+		b->arg_count = mi.arguments.size();
+		b->param_kinds = kinds;
+		add_behaviour(p_engine, cname, asBEHAVE_CONSTRUCT, "void f(" + args + ")", b);
+	}
+
+	// 成员访问器名：内建方法清单里也有同名 get_X/set_X（如 Transform2D.get_origin），
+	// 若两边都注册会 asALREADY_REGISTERED 并污染引擎。成员统一走虚属性，内建方法遇同名则跳过。
+	List<StringName> members;
+	Variant::get_member_list(p_type, &members);
+	HashSet<String> member_accessors;
+	for (const StringName &mn : members) {
+		member_accessors.insert("get_" + String(mn));
+		member_accessors.insert("set_" + String(mn));
+	}
+
+	// 内省内建方法。
+	List<StringName> builtin_methods;
+	Variant::get_builtin_method_list(p_type, &builtin_methods);
+	for (const StringName &mn : builtin_methods) {
+		if (Variant::is_builtin_method_vararg(p_type, mn)) {
+			continue;
+		}
+		if (member_accessors.has(String(mn))) {
+			continue; // 已由成员虚属性覆盖。
+		}
+		if (Variant::is_builtin_method_static(p_type, mn)) {
+			continue; // M2：静态内建方法没有对象 this，暂不注册（ledger noted）。
+		}
+		Variant::ValidatedBuiltInMethod vm = Variant::get_validated_builtin_method(p_type, mn);
+		if (!vm) {
+			continue;
+		}
+		MethodInfo mi = Variant::get_builtin_method_info(p_type, mn);
+		// NIL 返回值有两种语义：真正的 void，以及返回 Variant。后者由内省带上
+		// PROPERTY_USAGE_NIL_IS_VARIANT（见 variant_call.cpp get_method_info）。
+		// 若把 Variant 返回值误判为 void，脚本侧 `Variant r = a.pop_back();` 会因
+		// 数据源为 void 而报错，且副作用之外的返回值被静默丢弃。
+		bool returns_variant = (mi.return_val.type == Variant::NIL) && (mi.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT);
+		bool returns_void = (mi.return_val.type == Variant::NIL) && !returns_variant;
+		String ret = returns_void ? "void" : param_type_name(mi.return_val.type);
+		if (ret.is_empty()) {
+			continue;
+		}
+		String args;
+		Vector<ASBindingKind> kinds;
+		if (!render_args(mi.arguments, &args, &kinds)) {
+			continue;
+		}
+		bool is_const = Variant::is_builtin_method_const(p_type, mn);
+		String decl = ret + " " + String(mn) + "(" + args + ")" + (is_const ? " const" : "");
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_METHOD;
+		b->type = p_type;
+		b->method = vm;
+		b->return_type = mi.return_val.type;
+		b->return_kind = returns_void ? AS_KIND_VOID : kind_of_type(mi.return_val.type);
+		b->param_kinds = kinds;
+		b->arg_count = mi.arguments.size();
+		add_method(p_engine, cname, decl, b);
+	}
+
+	// 内省成员 -> AS 虚属性（get_X/set_X + property 属性）。
+	for (const StringName &mn : members) {
+		Variant::Type mt = Variant::get_member_type(p_type, mn);
+		String mt_name = param_type_name(mt);
+		if (mt_name.is_empty()) {
+			continue;
+		}
+		Variant::ValidatedGetter getter = Variant::get_member_validated_getter(p_type, mn);
+		Variant::ValidatedSetter setter = Variant::get_member_validated_setter(p_type, mn);
+		if (getter) {
+			ASValueBinding *b = memnew(ASValueBinding);
+			b->kind = VT_MEMBER_GET;
+			b->type = p_type;
+			b->member_get = getter;
+			b->return_type = mt;
+			b->return_kind = kind_of_type(mt);
+			add_method(p_engine, cname, mt_name + " get_" + String(mn) + "() const property", b);
+		}
+		if (setter) {
+			ASValueBinding *b = memnew(ASValueBinding);
+			b->kind = VT_MEMBER_SET;
+			b->type = p_type;
+			b->member_set = setter;
+			b->param_kinds.push_back(kind_of_type(mt));
+			add_method(p_engine, cname, "void set_" + String(mn) + "(" + as_binding_render_param(mt_name) + ") property", b);
+		}
+	}
+
+	// 索引/键值访问：AS 2.38 没有 opIndexAssign，读用 opIndex 方法会屏蔽掉 property 访问器，
+	// 从而使 `a[i] = v` 只作用在 opIndex 的临时返回值上（静默丢弃）。因此索引访问统一注册为
+	// get_opIndex/set_opIndex 属性访问器（propertyAccessorMode == 3 要求 property 标记），
+	// 读写路径都经 FindPropertyAccessor 解析（as_compiler.cpp:14527-14589）。
+	// Dictionary 同时满足 has_indexing 与 is_keyed：两者都注册会造成
+	// "Found multiple get accessors for property 'opIndex'"。键值访问优先，
+	// 此时只注册 Variant 键版本（Godot 侧 Dictionary 的索引本就走 Variant）。
+	const bool keyed = Variant::is_keyed(p_type);
+	if (Variant::has_indexing(p_type) && !keyed) {
+		Variant::Type et = Variant::get_indexed_element_type(p_type);
+		String et_name = param_type_name(et);
+		if (!et_name.is_empty()) {
+			ASValueBinding *g = memnew(ASValueBinding);
+			g->kind = VT_INDEX_GET;
+			g->type = p_type;
+			g->return_kind = kind_of_type(et);
+			add_method(p_engine, cname, et_name + " get_opIndex(int64 index) const property", g);
+
+			ASValueBinding *s = memnew(ASValueBinding);
+			s->kind = VT_INDEX_SET;
+			s->type = p_type;
+			s->param_kinds.push_back(kind_of_type(et));
+			add_method(p_engine, cname, "void set_opIndex(int64 index, " + as_binding_render_param(et_name) + ") property", s);
+		}
+	}
+	if (Variant::is_keyed(p_type)) {
+		ASValueBinding *g = memnew(ASValueBinding);
+		g->kind = VT_KEYED_GET;
+		g->type = p_type;
+		g->return_kind = AS_KIND_VALUE;
+		add_method(p_engine, cname, "Variant get_opIndex(const Variant &in key) const property", g);
+
+		ASValueBinding *s = memnew(ASValueBinding);
+		s->kind = VT_KEYED_SET;
+		s->type = p_type;
+		s->param_kinds.push_back(AS_KIND_VALUE);
+		add_method(p_engine, cname, "void set_opIndex(const Variant &in key, const Variant &in value) property", s);
+	}
+
+	// 运算符：仅注册 (T, T) 形式的二元算术与相等比较。
+	static const Variant::Operator BIN_OPS[] = { Variant::OP_ADD, Variant::OP_SUBTRACT, Variant::OP_MULTIPLY, Variant::OP_DIVIDE };
+	static const char *BIN_OP_NAMES[] = { "opAdd", "opSubtract", "opMultiply", "opDivide" };
+	for (int i = 0; i < 4; i++) {
+		Variant::Type rt = Variant::get_operator_return_type(BIN_OPS[i], p_type, p_type);
+		if (rt == Variant::NIL) {
+			continue;
+		}
+		String rt_name = param_type_name(rt);
+		if (rt_name.is_empty()) {
+			continue;
+		}
+		Variant::ValidatedOperatorEvaluator ev = Variant::get_validated_operator_evaluator(BIN_OPS[i], p_type, p_type);
+		if (!ev) {
+			continue;
+		}
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_OP;
+		b->type = p_type;
+		b->op_eval = ev;
+		b->return_type = rt;
+		b->return_kind = kind_of_type(rt);
+		b->param_kinds.push_back(kind_of_type(p_type));
+		b->arg_count = 1;
+		add_method(p_engine, cname, rt_name + " " + BIN_OP_NAMES[i] + "(const " + p_name + " &in other) const", b);
+	}
+	{
+		Variant::Type rt = Variant::get_operator_return_type(Variant::OP_EQUAL, p_type, p_type);
+		Variant::ValidatedOperatorEvaluator ev = Variant::get_validated_operator_evaluator(Variant::OP_EQUAL, p_type, p_type);
+		if (rt == Variant::BOOL && ev) {
+			ASValueBinding *b = memnew(ASValueBinding);
+			b->kind = VT_OP;
+			b->type = p_type;
+			b->op_eval = ev;
+			b->return_type = Variant::BOOL;
+			b->return_kind = AS_KIND_BOOL;
+			b->param_kinds.push_back(kind_of_type(p_type));
+			b->arg_count = 1;
+			add_method(p_engine, cname, "bool opEquals(const " + p_name + " &in other) const", b);
+		}
+	}
+}
+
+// Variant 自身的转换构造与转换运算符：脚本里 Variant 与标量/String 的互转。
+static void register_variant_conversions(asIScriptEngine *p_engine) {
+	CharString name = String("Variant").utf8();
+
+	struct {
+		const char *decl;
+		ASBindingKind kind;
+	} ctors[] = {
+		{ "void f(int64)", AS_KIND_INT64 },
+		{ "void f(double)", AS_KIND_DOUBLE },
+		{ "void f(bool)", AS_KIND_BOOL },
+		{ "void f(const String &in)", AS_KIND_VALUE },
+	};
+	for (const auto &c : ctors) {
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_CTOR_ARGS;
+		b->type = Variant::NIL;
+		b->arg_count = 1;
+		b->param_kinds.push_back(c.kind);
+		add_behaviour(p_engine, name, asBEHAVE_CONSTRUCT, c.decl, b);
+	}
+
+	struct {
+		const char *decl;
+		ASBindingKind kind;
+	} convs[] = {
+		{ "int64 opImplConv() const", AS_KIND_INT64 },
+		{ "double opImplConv() const", AS_KIND_DOUBLE },
+		{ "bool opImplConv() const", AS_KIND_BOOL },
+		{ "String opImplConv() const", AS_KIND_VALUE },
+	};
+	for (const auto &c : convs) {
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_CONV;
+		b->type = Variant::NIL;
+		b->return_kind = c.kind;
+		add_method(p_engine, name, c.decl, b);
+	}
+}
+
+// string 类型：工厂 + 与 Godot String 的双向构造 + length()。
+// 类型骨架（asOBJ_VALUE，sizeof(void*)）已在第一阶段注册。
+static void register_string_support(asIScriptEngine *p_engine) {
+	CharString str_name = String("string").utf8();
+
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_STRING_DEFAULT;
+		add_behaviour(p_engine, str_name, asBEHAVE_CONSTRUCT, "void f()", b);
+	}
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_STRING_COPY;
+		add_behaviour(p_engine, str_name, asBEHAVE_CONSTRUCT, "void f(const string &in)", b);
+	}
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_STRING_FROM_GODOT;
+		add_behaviour(p_engine, str_name, asBEHAVE_CONSTRUCT, "void f(const String &in)", b);
+	}
+	{
+		// AS 对值类型的 `string t = s;` 需要 opAssign，仅靠拷贝构造不生成。
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_STRING_ASSIGN;
+		add_method(p_engine, str_name, "string &opAssign(const string &in)", b);
+	}
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_NOOP;
+		add_behaviour(p_engine, str_name, asBEHAVE_DESTRUCT, "void f()", b);
+	}
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_STRING_LENGTH;
+		b->return_kind = AS_KIND_INT64;
+		add_method(p_engine, str_name, "int64 length() const", b);
+	}
+	// 类型已可解析，绑定工厂：字符串字面量由它创建。
+	p_engine->RegisterStringFactory("string", &g_string_factory);
+
+	// String(const string &in)：Godot String 从 AS string 构造。
+	{
+		ASValueBinding *b = memnew(ASValueBinding);
+		b->kind = VT_CTOR_FROM_STRING;
+		b->type = Variant::STRING;
+		add_behaviour(p_engine, String("String").utf8(), asBEHAVE_CONSTRUCT, "void f(const string &in)", b);
+	}
+}
+
+// 值类型注册是「每引擎一次」，因此注册状态按引擎指针记录。
+// 早前的单指针写法在多引擎场景（单元测试、引擎销毁后重建）下会让第二个引擎
+// 拿不到值类型骨架，之后任何引用 String/Vector2 等的 Register* 都会失败，
+// 而 AS 一旦有 Register* 失败就会永久置 configFailed。
+static HashSet<asIScriptEngine *> g_registered_engines;
+// 同上：Variant 对象转换构造器每个引擎只需注册一次。
+static HashSet<asIScriptEngine *> g_object_conv_engines;
+
+// 注册依赖对象类型的 Variant 转换构造器（`Variant(Object @)`）。
+// 必须在全部对象骨架注册完成之后调用：值类型阶段解析不到 `Object` 类型名，
+// 一旦 Register* 失败引擎会被永久标记为 configFailed 且不可恢复。
+Error ASBindingValueTypes::register_object_conversions(asIScriptEngine *p_engine) {
+	if (!p_engine) {
+		return ERR_INVALID_PARAMETER;
+	}
+	if (g_object_conv_engines.has(p_engine)) {
+		return OK; // 幂等：同一引擎只注册一次。
+	}
+	if (p_engine->GetTypeInfoByName("Object") == nullptr) {
+		return OK; // 对象骨架尚未注册，交给后续调用点。
+	}
+	// 对象句柄作为**非拥有**句柄传入：Variant 只持引用，不接管生命周期。
+	// 跳板走 VT_CTOR_ARGS 的 Variant 自身分支（`*self = *args[0]`）。
+	ASValueBinding *b = memnew(ASValueBinding);
+	b->kind = VT_CTOR_ARGS;
+	b->type = Variant::NIL;
+	b->arg_count = 1;
+	b->param_kinds.push_back(AS_KIND_OBJECT_NONOWNING);
+	add_behaviour(p_engine, String("Variant").utf8(), asBEHAVE_CONSTRUCT, "void f(Object @)", b);
+
+	g_object_conv_engines.insert(p_engine);
+	return OK;
+}
+
+Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
+	if (!p_engine) {
+		return ERR_INVALID_PARAMETER;
+	}
+	if (g_registered_engines.has(p_engine)) {
+		return OK; // 同一引擎只注册一次。
+	}
+	g_registered_engines.insert(p_engine);
+
+	static const Variant::Type TYPES[] = {
+		Variant::STRING, Variant::STRING_NAME, Variant::NODE_PATH, Variant::RID,
+		Variant::VECTOR2, Variant::VECTOR2I, Variant::VECTOR3, Variant::VECTOR3I,
+		Variant::VECTOR4, Variant::VECTOR4I, Variant::RECT2, Variant::RECT2I,
+		Variant::TRANSFORM2D, Variant::PLANE, Variant::QUATERNION, Variant::AABB,
+		Variant::BASIS, Variant::TRANSFORM3D, Variant::PROJECTION, Variant::COLOR,
+		Variant::PACKED_BYTE_ARRAY, Variant::PACKED_INT32_ARRAY, Variant::PACKED_INT64_ARRAY,
+		Variant::PACKED_FLOAT32_ARRAY, Variant::PACKED_FLOAT64_ARRAY, Variant::PACKED_STRING_ARRAY,
+		Variant::PACKED_VECTOR2_ARRAY, Variant::PACKED_VECTOR3_ARRAY, Variant::PACKED_VECTOR4_ARRAY,
+		Variant::PACKED_COLOR_ARRAY, Variant::ARRAY, Variant::DICTIONARY, Variant::CALLABLE, Variant::SIGNAL,
+	};
+	// 第一阶段：先把全部值类型骨架注册好（含 Variant 与 AS 的 string）。
+	for (int i = 0; i < 34; i++) {
+		register_type_skeleton(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), sizeof(Variant));
+	}
+	register_type_skeleton(p_engine, "Variant", sizeof(Variant));
+	register_type_skeleton(p_engine, "string", sizeof(void *));
+
+	// 第二阶段：骨架齐备后做内省注册，签名里的类型引用才都能解析。
+	for (int i = 0; i < 34; i++) {
+		register_type_members(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), TYPES[i]);
+	}
+	register_type_members(p_engine, "Variant", Variant::NIL);
+	register_variant_conversions(p_engine);
+	register_string_support(p_engine);
+	return OK;
+}
+
+// `const string &in` 的实参在 AS 侧有两种形态（见 as_compiler.cpp 的 isRefSafe 处理）：
+//  - 字面量：asBC_PGA 直接把工厂指针作为实参压入，不能再解引用；
+//  - 变量：压入的是保存工厂指针的存储地址，必须解一次引用。
+// 用驻留指针集合区分二者，得到统一的工厂指针。
+static const ASGodotStringObject *string_slot(asIScriptGeneric *p_gen, int p_index) {
+	const void *arg = p_gen->GetArgObject(p_index);
+	if (!arg) {
+		return nullptr;
+	}
+	const ASGodotStringObject *o = (const ASGodotStringObject *)arg;
+	if (g_interned_string_ptrs.has(o)) {
+		return o; // 字面量。
+	}
+	return *(const ASGodotStringObject *const *)arg; // 变量：存储地址解一次。
+}
+
+void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
+	asIScriptFunction *func = p_gen->GetFunction();
+	ASValueBinding *b = func ? (ASValueBinding *)func->GetUserData() : nullptr;
+	if (!b) {
+		set_exception("angelscript: missing value type binding");
+		return;
+	}
+	Variant *self = (Variant *)p_gen->GetObject();
+	Variant ret;
+
+	switch (b->kind) {
+		case VT_CTOR_DEFAULT: {
+			if (!self) {
+				set_exception("angelscript: null self in value constructor");
+				return;
+			}
+			new (self) Variant();
+			if (b->type != Variant::NIL) {
+				Callable::CallError err;
+				const Variant *noargs[1] = { nullptr };
+				Variant::construct(b->type, *self, noargs, 0, err);
+			}
+			return;
+		}
+		case VT_CTOR_COPY: {
+			new (self) Variant(*(const Variant *)p_gen->GetArgObject(0));
+			return;
+		}
+		case VT_CTOR_ARGS: {
+			new (self) Variant();
+			Variant vals[8];
+			const Variant *args[8];
+			int n = b->arg_count < 8 ? b->arg_count : 8;
+			for (int i = 0; i < n; i++) {
+				vals[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i]);
+				args[i] = &vals[i];
+			}
+			if (b->type == Variant::NIL) {
+				if (n > 0) {
+					*self = *args[0]; // Variant 自身：拷贝构造 / 隐式转换。
+				}
+			} else {
+				Callable::CallError err;
+				Variant::construct(b->type, *self, args, n, err);
+			}
+			return;
+		}
+		case VT_DTOR: {
+			if (self) {
+				self->~Variant();
+			}
+			return;
+		}
+		case VT_ASSIGN: {
+			*self = *(const Variant *)p_gen->GetArgObject(0);
+			p_gen->SetReturnAddress(self); // 声明为 T& f(const T&)。
+			return;
+		}
+		case VT_METHOD: {
+			if (!b->method || !self) {
+				set_exception("angelscript: invalid builtin method binding");
+				return;
+			}
+			Variant vals[8];
+			const Variant *args[8];
+			int n = b->arg_count;
+			for (int i = 0; i < n && i < 8; i++) {
+				vals[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i]);
+				args[i] = &vals[i];
+			}
+			VariantInternal::initialize(&ret, b->return_type);
+			b->method(self, args, n, &ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			return;
+		}
+		case VT_MEMBER_GET: {
+			if (!b->member_get || !self) {
+				set_exception("angelscript: invalid member getter binding");
+				return;
+			}
+			VariantInternal::initialize(&ret, b->return_type);
+			b->member_get(self, &ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			return;
+		}
+		case VT_MEMBER_SET: {
+			if (!b->member_set || !self) {
+				set_exception("angelscript: invalid member setter binding");
+				return;
+			}
+			Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
+			b->member_set(self, &v);
+			return;
+		}
+		case VT_INDEX_GET: {
+			bool valid = false;
+			bool oob = false;
+			ret = self->get_indexed((int64_t)p_gen->GetArgQWord(0), valid, oob);
+			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			return;
+		}
+		case VT_INDEX_SET: {
+			// set_opIndex 的形参顺序为 (index, value)。
+			Variant v = as_binding_marshal_arg(p_gen, 1, b->param_kinds[0]);
+			bool valid = false;
+			bool oob = false;
+			self->set_indexed((int64_t)p_gen->GetArgQWord(0), v, valid, oob);
+			return;
+		}
+		case VT_STRING_ASSIGN: {
+			if (!self) {
+				set_exception("angelscript: null self in string assign");
+				return;
+			}
+			*(const void **)self = string_slot(p_gen, 0);
+			p_gen->SetReturnAddress(self);
+			return;
+		}
+		case VT_KEYED_GET: {
+			Variant key = as_binding_marshal_arg(p_gen, 0, AS_KIND_VALUE);
+			bool valid = false;
+			ret = self->get_keyed(key, valid);
+			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			return;
+		}
+		case VT_KEYED_SET: {
+			// set_opIndex 的形参顺序为 (key, value)。
+			Variant key = as_binding_marshal_arg(p_gen, 0, AS_KIND_VALUE);
+			Variant v = as_binding_marshal_arg(p_gen, 1, AS_KIND_VALUE);
+			bool valid = false;
+			self->set_keyed(key, v, valid);
+			return;
+		}
+		case VT_OP: {
+			if (!b->op_eval || !self) {
+				set_exception("angelscript: invalid operator binding");
+				return;
+			}
+			Variant right;
+			const Variant *right_ptr = nullptr;
+			if (b->arg_count > 0) {
+				right = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
+				right_ptr = &right;
+			}
+			VariantInternal::initialize(&ret, b->return_type);
+			b->op_eval(self, right_ptr, &ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			return;
+		}
+		case VT_CONV: {
+			switch (b->return_kind) {
+				case AS_KIND_INT64:
+					*(int64_t *)p_gen->GetAddressOfReturnLocation() = (int64_t)*self;
+					return;
+				case AS_KIND_DOUBLE:
+					*(double *)p_gen->GetAddressOfReturnLocation() = (double)*self;
+					return;
+				case AS_KIND_BOOL:
+					*(bool *)p_gen->GetAddressOfReturnLocation() = (bool)*self;
+					return;
+				case AS_KIND_VALUE: {
+					Variant s = Variant((String)*self);
+					p_gen->SetReturnObject(&s); // String 的存储也是一个 Variant。
+					return;
+				}
+				default:
+					return;
+			}
+		}
+		case VT_NOOP:
+			return;
+		case VT_CTOR_FROM_STRING: {
+			const ASGodotStringObject *o = string_slot(p_gen, 0);
+			new (self) Variant(Variant(o ? o->str : String()));
+			return;
+		}
+		case VT_STRING_DEFAULT: {
+			*(const void **)self = intern_string(String());
+			return;
+		}
+		case VT_STRING_COPY: {
+			*(const void **)self = string_slot(p_gen, 0);
+			return;
+		}
+		case VT_STRING_FROM_GODOT: {
+			Variant v = as_binding_marshal_arg(p_gen, 0, AS_KIND_VALUE);
+			*(const void **)self = intern_string((String)v);
+			return;
+		}
+		case VT_STRING_LENGTH: {
+			const ASGodotStringObject *o = self ? (const ASGodotStringObject *)*(const void **)self : nullptr;
+			*(int64_t *)p_gen->GetAddressOfReturnLocation() = o ? (int64_t)o->str.length() : 0;
+			return;
+		}
+	}
+}
