@@ -1,0 +1,101 @@
+name: AngelScript Platforms
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "modules/angelscript/**"
+      - ".github/workflows/angelscript-platforms.yml"
+
+permissions:
+  contents: read
+
+env:
+  SCONS_FLAGS: dev_mode=yes
+
+jobs:
+  desktop:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-26.04
+            platform: linuxbsd
+            arch: x86_64
+            bin: bin/godot.linuxbsd.editor.x86_64
+          - name: macos-arm64
+            os: macos-26
+            platform: macos
+            arch: arm64
+            bin: bin/godot.macos.editor.arm64
+          - name: windows-x86_64
+            os: windows-2022
+            platform: windows
+            arch: x86_64
+            bin: bin/godot.windows.editor.x86_64.console.exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/godot-cache-restore
+      - uses: ./.github/actions/godot-deps
+      - name: Selector self-test
+        run: python modules/angelscript/tests/asm_sources_test.py
+      - name: Build editor
+        uses: ./.github/actions/godot-build
+        with:
+          target: editor
+          platform: ${{ matrix.platform }}
+          scons-flags: arch=${{ matrix.arch }} ${{ env.SCONS_FLAGS }}
+      - name: Smoke (import + run)
+        shell: bash
+        run: |
+          set -e
+          RUN=""
+          if [ "${{ matrix.platform }}" = "linuxbsd" ]; then RUN="xvfb-run"; fi
+          $RUN ${{ matrix.bin }} --headless --import --path modules/angelscript/tests/smoke_project 2>&1 | tee import_log.txt || true
+          $RUN ${{ matrix.bin }} --headless --path modules/angelscript/tests/smoke_project --quit-after 30 2>&1 | tee run_log.txt || true
+          grep -q "910001" run_log.txt
+          grep -q "910002" run_log.txt
+          echo "smoke tokens present"
+
+  mobile:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: android-arm64
+            os: ubuntu-26.04
+            platform: android
+            arch: arm64
+          - name: android-x86_64
+            os: ubuntu-26.04
+            platform: android
+            arch: x86_64
+          - name: ios-arm64
+            os: macos-26
+            platform: ios
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/godot-cache-restore
+      - uses: ./.github/actions/godot-deps
+      - name: Setup Java
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Build template
+        uses: ./.github/actions/godot-build
+        with:
+          target: template_debug
+          platform: ${{ matrix.platform }}
+          scons-flags: arch=${{ matrix.arch }} ${{ env.SCONS_FLAGS }}
