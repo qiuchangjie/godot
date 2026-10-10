@@ -116,6 +116,51 @@ bool op_equals(const Vector2 *self, const Vector2 *p_other) {
 	return *self == *p_other;
 }
 
+// ---- 方法 thunk 模板 ----
+// 返回标量的方法：直接以 double 返回（不涉及对象返回 ABI）。
+template <auto M>
+double m_scalar(const Vector2 *self) {
+	ASNativeValueOps::note_thunk_call();
+	return (double)(self->*M)();
+}
+
+template <auto M>
+double m1_scalar(const Vector2 *self, const Vector2 *p_a) {
+	ASNativeValueOps::note_thunk_call();
+	return (double)(self->*M)(*p_a);
+}
+
+// 返回 Vector2 的方法：同样受内存返回 ABI 约束，签名需带 ret 指针。
+template <auto M>
+void m_obj(Vector2 *ret, const Vector2 *self) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2((self->*M)());
+}
+
+template <auto M>
+void m1_obj(Vector2 *ret, const Vector2 *self, const Vector2 *p_a) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2((self->*M)(*p_a));
+}
+
+template <auto M>
+void m1_obj_f(Vector2 *ret, const Vector2 *self, const Vector2 *p_a, double p_w) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2((self->*M)(*p_a, (real_t)p_w));
+}
+
+template <auto M>
+void m2_obj(Vector2 *ret, const Vector2 *self, const Vector2 *p_a, const Vector2 *p_b) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2((self->*M)(*p_a, *p_b));
+}
+
+template <auto M>
+void m_f_obj(Vector2 *ret, const Vector2 *self, double p_a) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Vector2((self->*M)((real_t)p_a));
+}
+
 } // namespace
 
 namespace ASNativeValueStorage {
@@ -169,6 +214,27 @@ bool register_vector2_members(asIScriptEngine *p_engine) {
 	e->RegisterObjectMethod("Vector2", "Vector2 opMul(const Vector2 &in) const", asFUNCTION(op_mul), asCALL_CDECL_OBJFIRST);
 	e->RegisterObjectMethod("Vector2", "Vector2 opDiv(const Vector2 &in) const", asFUNCTION(op_div), asCALL_CDECL_OBJFIRST);
 	e->RegisterObjectMethod("Vector2", "bool opEquals(const Vector2 &in) const", asFUNCTION(op_equals), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double length() const", asFUNCTION((m_scalar<&Vector2::length>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double length_squared() const", asFUNCTION((m_scalar<&Vector2::length_squared>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 normalized() const", asFUNCTION((m_obj<&Vector2::normalized>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double dot(const Vector2 &in) const", asFUNCTION((m1_scalar<&Vector2::dot>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double distance_to(const Vector2 &in) const", asFUNCTION((m1_scalar<&Vector2::distance_to>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double distance_squared_to(const Vector2 &in) const", asFUNCTION((m1_scalar<&Vector2::distance_squared_to>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double cross(const Vector2 &in) const", asFUNCTION((m1_scalar<&Vector2::cross>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double angle() const", asFUNCTION((m_scalar<&Vector2::angle>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double angle_to(const Vector2 &in) const", asFUNCTION((m1_scalar<&Vector2::angle_to>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "double angle_to_point(const Vector2 &in) const", asFUNCTION((m1_scalar<&Vector2::angle_to_point>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 direction_to(const Vector2 &in) const", asFUNCTION((m1_obj<&Vector2::direction_to>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 project(const Vector2 &in) const", asFUNCTION((m1_obj<&Vector2::project>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 slide(const Vector2 &in) const", asFUNCTION((m1_obj<&Vector2::slide>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 bounce(const Vector2 &in) const", asFUNCTION((m1_obj<&Vector2::bounce>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 reflect(const Vector2 &in) const", asFUNCTION((m1_obj<&Vector2::reflect>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 lerp(const Vector2 &in, double) const", asFUNCTION((m1_obj_f<&Vector2::lerp>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 slerp(const Vector2 &in, double) const", asFUNCTION((m1_obj_f<&Vector2::slerp>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 move_toward(const Vector2 &in, double) const", asFUNCTION((m1_obj_f<&Vector2::move_toward>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 clamp(const Vector2 &in, const Vector2 &in) const", asFUNCTION((m2_obj<&Vector2::clamp>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 rotated(double) const", asFUNCTION((m_f_obj<&Vector2::rotated>)), asCALL_CDECL_OBJFIRST);
+	e->RegisterObjectMethod("Vector2", "Vector2 posmod(double) const", asFUNCTION((m_f_obj<&Vector2::posmod>)), asCALL_CDECL_OBJFIRST);
 	return true;
 }
 
