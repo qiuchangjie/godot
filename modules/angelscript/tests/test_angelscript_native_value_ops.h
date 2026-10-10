@@ -36,6 +36,7 @@
 
 void as_native_vo_scaffold_fallback_unchanged();
 void as_native_vo_vector2_opadd();
+void as_native_vo_vector2_arith_assign();
 
 #ifndef ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
 
@@ -45,6 +46,10 @@ TEST_CASE("[AngelScript] native value ops scaffold fallback") {
 
 TEST_CASE("[AngelScript] native value ops vector2 opAdd") {
 	as_native_vo_vector2_opadd();
+}
+
+TEST_CASE("[AngelScript] native value ops vector2 arith assign") {
+	as_native_vo_vector2_arith_assign();
 }
 
 #endif // ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL

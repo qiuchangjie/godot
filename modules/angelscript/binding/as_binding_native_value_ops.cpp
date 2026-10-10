@@ -43,12 +43,37 @@ struct OpAdd {
 	static T apply(const T &p_a, const T &p_b) { return p_a + p_b; }
 };
 
-// 二元运算：返回新对象。返回值存储为 sizeof(Variant)，按平台“内存返回”约定，
-// ret 是 AS 传入的隐藏返回缓冲（spec §4.3 / §7.1）。
+template <typename T>
+struct OpSub {
+	static T apply(const T &p_a, const T &p_b) { return p_a - p_b; }
+};
+
+template <typename T>
+struct OpMul {
+	static T apply(const T &p_a, const T &p_b) { return p_a * p_b; }
+};
+
+template <typename T>
+struct OpDiv {
+	static T apply(const T &p_a, const T &p_b) { return p_a / p_b; }
+};
+
+// 二元运算：返回新对象。返回值为 sizeof(Variant)，按平台“内存返回”约定，
+// ret 是 AS 传入的隐藏返回缓冲（见 spec §4.3 / §7.1）。
 template <typename T, typename Op>
 void thunk_binop(Variant *ret, const Variant *self, const Variant *other) {
 	ASNativeValueOps::note_thunk_call();
 	new (ret) Variant(Op::apply((const T &)*self, (const T &)*other));
+}
+
+// opAssign：原地改写 self 的 Variant 存储。AS 侧声明为返回引用，
+// 故原生函数返回 self 的地址以匹配引用返回的 ABI（见 spec §4.4）。
+template <typename T>
+Variant *thunk_assign(Variant *self, const Variant *other) {
+	(void)sizeof(T);
+	ASNativeValueOps::note_thunk_call();
+	*self = *other;
+	return self;
 }
 
 } // namespace
@@ -58,16 +83,28 @@ namespace ASNativeValueOps {
 static int g_native_registration_count = 0;
 static int g_native_thunk_calls = 0;
 
-// 空表：全部回退 generic。T3 起按「类型 + 运算符/方法名」逐条填入原生 thunk。
+// 命中即原生注册并返回 true（调用方跳过 generic 跳板）；未命中返回 false。
 bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::Type p_type, const String &p_op, const String &p_decl) {
-	if (p_type == Variant::VECTOR2 && p_op == "opAdd") {
-		void *fn = (void *)&thunk_binop<Vector2, OpAdd<Vector2>>;
-		if (p_engine->RegisterObjectMethod(p_type_name.utf8().get_data(), p_decl.utf8().get_data(),
-					asFUNCTION(fn), asCALL_CDECL_OBJFIRST) >= 0) {
-			g_native_registration_count++;
-			return true;
-		}
+	if (p_type != Variant::VECTOR2) {
+		return false; // 其余类型暂走 generic 回退。
+	}
+	void *fn = nullptr;
+	if (p_op == "opAdd") {
+		fn = (void *)&thunk_binop<Vector2, OpAdd<Vector2>>;
+	} else if (p_op == "opSub") {
+		fn = (void *)&thunk_binop<Vector2, OpSub<Vector2>>;
+	} else if (p_op == "opMul") {
+		fn = (void *)&thunk_binop<Vector2, OpMul<Vector2>>;
+	} else if (p_op == "opDiv") {
+		fn = (void *)&thunk_binop<Vector2, OpDiv<Vector2>>;
+	} else if (p_op == "opAssign") {
+		fn = (void *)&thunk_assign<Vector2>;
+	} else {
 		return false;
+	}
+	if (p_engine->RegisterObjectMethod(p_type_name.utf8().get_data(), p_decl.utf8().get_data(), asFUNCTION(fn), asCALL_CDECL_OBJFIRST) >= 0) {
+		g_native_registration_count++;
+		return true;
 	}
 	return false;
 }

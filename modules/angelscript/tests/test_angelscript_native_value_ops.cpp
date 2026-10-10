@@ -105,3 +105,22 @@ void as_native_vo_vector2_opadd() {
 	CHECK(nearly(out, 46.0)); // (1+3)*10 + (2+4)
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0); // 证明走了原生 opAdd
 }
+
+void as_native_vo_vector2_arith_assign() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double("double main() { Vector2 a(10, 8); Vector2 b(2, 3); Vector2 s = a - b; Vector2 m = a * b; Vector2 d = a / b; Vector2 r; r = s + m + d; return r.x * 100.0 + r.y; }", &out)) {
+		return;
+	}
+	CHECK(out > 3331.0); // s=(8,5) m=(20,24) d=(5,2.666..) r=(33,31.666..)
+	CHECK(out < 3332.0);
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+
+	// 隔离验证：仅减法也必须走原生（排除 opAdd 对计数的干扰）。
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double("double main() { Vector2 a(10, 8); Vector2 b(2, 3); Vector2 s = a - b; return s.x * 100.0 + s.y; }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 805.0)); // (8,5)
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}

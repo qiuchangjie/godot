@@ -255,10 +255,13 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 	}
 	{
 		// AS 没有 asBEHAVE_ASSIGNMENT；opAssign 作为运算符方法注册。
-		ASValueBinding *b = memnew(ASValueBinding);
-		b->kind = VT_ASSIGN;
-		b->type = p_type;
-		add_method(p_engine, cname, p_name + " &opAssign(const " + p_name + " &in)", b);
+		String decl = p_name + " &opAssign(const " + p_name + " &in)";
+		if (!ASNativeValueOps::try_add_op(p_engine, p_name, p_type, "opAssign", decl)) {
+			ASValueBinding *b = memnew(ASValueBinding);
+			b->kind = VT_ASSIGN;
+			b->type = p_type;
+			add_method(p_engine, cname, decl, b);
+		}
 	}
 
 	// 内省构造器（无参构造已由上面统一注册）。
@@ -409,7 +412,9 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 
 	// 运算符：仅注册 (T, T) 形式的二元算术与相等比较。
 	static const Variant::Operator BIN_OPS[] = { Variant::OP_ADD, Variant::OP_SUBTRACT, Variant::OP_MULTIPLY, Variant::OP_DIVIDE };
-	static const char *BIN_OP_NAMES[] = { "opAdd", "opSubtract", "opMultiply", "opDivide" };
+	// AngelScript 的二元运算符方法名：加法 opAdd，减法 opSub，乘法 opMul，除法 opDiv
+	// （见 thirdparty/angelscript/source/as_compiler.cpp 的运算符名映射）。
+	static const char *BIN_OP_NAMES[] = { "opAdd", "opSub", "opMul", "opDiv" };
 	for (int i = 0; i < 4; i++) {
 		Variant::Type rt = Variant::get_operator_return_type(BIN_OPS[i], p_type, p_type);
 		if (rt == Variant::NIL) {
