@@ -124,6 +124,14 @@ void as_binding_value_types_register_all() {
 	}
 	// string 由字符串工厂注册（spec §3.8.2）。
 	CHECK(engine->GetTypeInfoByName("string") != nullptr);
+
+	// 原生调用约定前提：注册对象类型必须带 asOBJ_APP_CLASS（无子标志）。
+	{
+		asITypeInfo *vi = engine->GetTypeInfoByName("Vector2");
+		REQUIRE(vi != nullptr);
+		CHECK((vi->GetFlags() & asOBJ_APP_CLASS) != 0);
+		CHECK((vi->GetFlags() & (asOBJ_APP_PRIMITIVE | asOBJ_APP_FLOAT | asOBJ_APP_ARRAY)) == 0);
+	}
 }
 
 void as_binding_value_types_vector2_roundtrip() {

@@ -217,7 +217,7 @@ static bool render_args(const Vector<PropertyInfo> &p_args, String *r_args, Vect
 }
 
 // ---------- 单类型注册 ----------
-// 第一阶段：只注册类型骨架（asOBJ_VALUE）。必须先让所有值类型都存在，
+// 第一阶段：只注册类型骨架（asOBJ_VALUE | asOBJ_APP_CLASS）。必须先让所有值类型都存在，
 // 内省出的构造函数/方法签名里引用的其它值类型才能被 AS 解析；
 // 否则任一 Register* 失败都会让 asCScriptEngine 永久进入 configFailed。
 static void register_type_skeleton(asIScriptEngine *p_engine, const String &p_name, int p_size) {
@@ -225,7 +225,9 @@ static void register_type_skeleton(asIScriptEngine *p_engine, const String &p_na
 	if (p_engine->GetTypeInfoByName(cname.get_data())) {
 		return; // 幂等。
 	}
-	p_engine->RegisterObjectType(cname.get_data(), p_size, asOBJ_VALUE);
+	// asOBJ_APP_CLASS 仅启用“按值返回/传参的原生 C++ 函数”合法；不带子标志 ⇒ 不改变脚本侧
+	// generic 的拷贝/析构/赋值语义（见 docs/superpowers/specs/2026-10-10-angelscript-vector-native-ops-design.md §4.1）。
+	p_engine->RegisterObjectType(cname.get_data(), p_size, asOBJ_VALUE | asOBJ_APP_CLASS);
 }
 
 // 第二阶段：骨架齐备后注册构造/析构/方法/属性/索引/运算符。
