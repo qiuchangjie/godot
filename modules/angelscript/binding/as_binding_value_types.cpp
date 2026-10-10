@@ -80,6 +80,7 @@ struct ASValueBinding {
 	Variant::Type return_type = Variant::NIL;
 	ASBindingKind return_kind = AS_KIND_VOID;
 	Vector<ASBindingKind> param_kinds;
+	Vector<Variant::Type> param_types; // 与 param_kinds 平行：实参的 Variant::Type（标量占位 NIL）。
 	int arg_count = 0;
 	Variant::ValidatedBuiltInMethod method = nullptr;
 	Variant::ValidatedOperatorEvaluator op_eval = nullptr;
@@ -197,7 +198,7 @@ static ASBindingKind kind_of_type(Variant::Type p_type) {
 	}
 }
 
-static bool render_args(const Vector<PropertyInfo> &p_args, String *r_args, Vector<ASBindingKind> *r_kinds) {
+static bool render_args(const Vector<PropertyInfo> &p_args, String *r_args, Vector<ASBindingKind> *r_kinds, Vector<Variant::Type> *r_types = nullptr) {
 	String args;
 	for (int i = 0; i < p_args.size(); i++) {
 		String name = param_type_name(p_args[i].type);
@@ -210,6 +211,9 @@ static bool render_args(const Vector<PropertyInfo> &p_args, String *r_args, Vect
 		args += as_binding_render_param(name);
 		if (r_kinds) {
 			r_kinds->push_back(kind_of_type(p_args[i].type));
+		}
+		if (r_types) {
+			r_types->push_back(p_args[i].type);
 		}
 	}
 	if (r_args) {
@@ -279,7 +283,8 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		}
 		String args;
 		Vector<ASBindingKind> kinds;
-		if (!render_args(mi.arguments, &args, &kinds)) {
+		Vector<Variant::Type> types;
+		if (!render_args(mi.arguments, &args, &kinds, &types)) {
 			continue;
 		}
 		ASValueBinding *b = memnew(ASValueBinding);
@@ -287,6 +292,7 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		b->type = p_type;
 		b->arg_count = mi.arguments.size();
 		b->param_kinds = kinds;
+		b->param_types = types;
 		add_behaviour(p_engine, cname, asBEHAVE_CONSTRUCT, "void f(" + args + ")", b);
 	}
 
@@ -330,7 +336,8 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		}
 		String args;
 		Vector<ASBindingKind> kinds;
-		if (!render_args(mi.arguments, &args, &kinds)) {
+		Vector<Variant::Type> types;
+		if (!render_args(mi.arguments, &args, &kinds, &types)) {
 			continue;
 		}
 		bool is_const = Variant::is_builtin_method_const(p_type, mn);
@@ -345,6 +352,7 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		b->return_type = mi.return_val.type;
 		b->return_kind = returns_void ? AS_KIND_VOID : kind_of_type(mi.return_val.type);
 		b->param_kinds = kinds;
+		b->param_types = types;
 		b->arg_count = mi.arguments.size();
 		add_method(p_engine, cname, decl, b);
 	}
@@ -373,6 +381,7 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 			b->type = p_type;
 			b->member_set = setter;
 			b->param_kinds.push_back(kind_of_type(mt));
+			b->param_types.push_back(mt);
 			add_method(p_engine, cname, "void set_" + String(mn) + "(" + as_binding_render_param(mt_name) + ") property", b);
 		}
 	}
@@ -399,6 +408,7 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 			s->kind = VT_INDEX_SET;
 			s->type = p_type;
 			s->param_kinds.push_back(kind_of_type(et));
+			s->param_types.push_back(et);
 			add_method(p_engine, cname, "void set_opIndex(int64 index, " + as_binding_render_param(et_name) + ") property", s);
 		}
 	}
@@ -413,6 +423,7 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		s->kind = VT_KEYED_SET;
 		s->type = p_type;
 		s->param_kinds.push_back(AS_KIND_VALUE);
+		s->param_types.push_back(Variant::NIL);
 		add_method(p_engine, cname, "void set_opIndex(const Variant &in key, const Variant &in value) property", s);
 	}
 
@@ -445,6 +456,7 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 		b->return_type = rt;
 		b->return_kind = kind_of_type(rt);
 		b->param_kinds.push_back(kind_of_type(p_type));
+		b->param_types.push_back(p_type);
 		b->arg_count = 1;
 		add_method(p_engine, cname, decl, b);
 	}
@@ -461,6 +473,7 @@ static void register_type_members(asIScriptEngine *p_engine, const String &p_nam
 				b->return_type = Variant::BOOL;
 				b->return_kind = AS_KIND_BOOL;
 				b->param_kinds.push_back(kind_of_type(p_type));
+				b->param_types.push_back(p_type);
 				b->arg_count = 1;
 				add_method(p_engine, cname, decl, b);
 			}
@@ -613,8 +626,8 @@ Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 	};
 	// 第一阶段：先把全部值类型骨架注册好（含 Variant 与 AS 的 string）。
 	for (int i = 0; i < 34; i++) {
-		if (TYPES[i] == Variant::VECTOR2 && ASNativeValueStorage::register_vector2_skeleton(p_engine)) {
-			continue; // 原生骨架已注册（throwaway spike）。
+		if (ASNativeValueStorage::register_skeleton(p_engine, TYPES[i])) {
+			continue; // 4 个向量类型已按原生布局注册。
 		}
 		register_type_skeleton(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), sizeof(Variant), true);
 	}
@@ -623,9 +636,6 @@ Error ASBindingValueTypes::register_all(asIScriptEngine *p_engine) {
 
 	// 第二阶段：骨架齐备后做内省注册，签名里的类型引用才都能解析。
 	for (int i = 0; i < 34; i++) {
-		if (TYPES[i] == Variant::VECTOR2 && ASNativeValueStorage::register_vector2_members(p_engine)) {
-			continue; // 原生成员已注册（throwaway spike）。
-		}
 		register_type_members(p_engine, ASBindingDecl::variant_type_to_as(TYPES[i]), TYPES[i]);
 	}
 	register_type_members(p_engine, "Variant", Variant::NIL);
@@ -665,13 +675,28 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 		set_exception("angelscript: missing value type binding");
 		return;
 	}
-	Variant *self = (Variant *)p_gen->GetObject();
+	void *self_slot = p_gen->GetObject();
+	const bool self_native = ASNativeValueStorage::is_native_storage_type(b->type) && self_slot != nullptr;
+	Variant self_tmp;
+	Variant *self = (Variant *)self_slot;
+	if (self_native) {
+		self_tmp = ASNativeValueStorage::native_to_variant(b->type, self_slot);
+		self = &self_tmp;
+	}
 	Variant ret;
 
 	switch (b->kind) {
 		case VT_CTOR_DEFAULT: {
-			if (!self) {
+			if (!self_slot) {
 				set_exception("angelscript: null self in value constructor");
+				return;
+			}
+			if (self_native) {
+				Callable::CallError err;
+				const Variant *noargs[1] = { nullptr };
+				Variant v;
+				Variant::construct(b->type, v, noargs, 0, err);
+				ASNativeValueStorage::variant_to_native(b->type, v, self_slot);
 				return;
 			}
 			new (self) Variant();
@@ -683,18 +708,31 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			return;
 		}
 		case VT_CTOR_COPY: {
+			if (self_native) {
+				Variant v = ASNativeValueStorage::native_to_variant(b->type, p_gen->GetArgObject(0));
+				ASNativeValueStorage::variant_to_native(b->type, v, self_slot);
+				return;
+			}
 			new (self) Variant(*(const Variant *)p_gen->GetArgObject(0));
 			return;
 		}
 		case VT_CTOR_ARGS: {
-			new (self) Variant();
 			Variant vals[8];
 			const Variant *args[8];
 			int n = b->arg_count < 8 ? b->arg_count : 8;
 			for (int i = 0; i < n; i++) {
-				vals[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i]);
+				Variant::Type pt = i < b->param_types.size() ? b->param_types[i] : Variant::NIL;
+				vals[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i], pt);
 				args[i] = &vals[i];
 			}
+			if (self_native) {
+				Variant constructed;
+				Callable::CallError err;
+				Variant::construct(b->type, constructed, args, n, err);
+				ASNativeValueStorage::variant_to_native(b->type, constructed, self_slot);
+				return;
+			}
+			new (self) Variant();
 			if (b->type == Variant::NIL) {
 				if (n > 0) {
 					*self = *args[0]; // Variant 自身：拷贝构造 / 隐式转换。
@@ -706,12 +744,21 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			return;
 		}
 		case VT_DTOR: {
+			if (self_native) {
+				return; // 原生存储为平凡类型，无需析构。
+			}
 			if (self) {
 				self->~Variant();
 			}
 			return;
 		}
 		case VT_ASSIGN: {
+			if (self_native) {
+				Variant v = ASNativeValueStorage::native_to_variant(b->type, p_gen->GetArgObject(0));
+				ASNativeValueStorage::variant_to_native(b->type, v, self_slot);
+				p_gen->SetReturnAddress(self_slot);
+				return;
+			}
 			*self = *(const Variant *)p_gen->GetArgObject(0);
 			p_gen->SetReturnAddress(self); // 声明为 T& f(const T&)。
 			return;
@@ -725,12 +772,13 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			const Variant *args[8];
 			int n = b->arg_count;
 			for (int i = 0; i < n && i < 8; i++) {
-				vals[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i]);
+				Variant::Type pt = i < b->param_types.size() ? b->param_types[i] : Variant::NIL;
+				vals[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i], pt);
 				args[i] = &vals[i];
 			}
 			VariantInternal::initialize(&ret, b->return_type);
 			b->method(self, args, n, &ret);
-			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
 			return;
 		}
 		case VT_MEMBER_GET: {
@@ -740,7 +788,7 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			}
 			VariantInternal::initialize(&ret, b->return_type);
 			b->member_get(self, &ret);
-			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
 			return;
 		}
 		case VT_MEMBER_SET: {
@@ -748,23 +796,31 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 				set_exception("angelscript: invalid member setter binding");
 				return;
 			}
-			Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
+			Variant::Type pt = b->param_types.is_empty() ? Variant::NIL : b->param_types[0];
+			Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0], pt);
 			b->member_set(self, &v);
+			if (self_native) {
+				ASNativeValueStorage::variant_to_native(b->type, *self, self_slot);
+			}
 			return;
 		}
 		case VT_INDEX_GET: {
 			bool valid = false;
 			bool oob = false;
 			ret = self->get_indexed((int64_t)p_gen->GetArgQWord(0), valid, oob);
-			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
 			return;
 		}
 		case VT_INDEX_SET: {
 			// set_opIndex 的形参顺序为 (index, value)。
-			Variant v = as_binding_marshal_arg(p_gen, 1, b->param_kinds[0]);
+			Variant::Type pt = b->param_types.is_empty() ? Variant::NIL : b->param_types[0];
+			Variant v = as_binding_marshal_arg(p_gen, 1, b->param_kinds[0], pt);
 			bool valid = false;
 			bool oob = false;
 			self->set_indexed((int64_t)p_gen->GetArgQWord(0), v, valid, oob);
+			if (self_native) {
+				ASNativeValueStorage::variant_to_native(b->type, *self, self_slot);
+			}
 			return;
 		}
 		case VT_STRING_ASSIGN: {
@@ -780,7 +836,7 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			Variant key = as_binding_marshal_arg(p_gen, 0, AS_KIND_VALUE);
 			bool valid = false;
 			ret = self->get_keyed(key, valid);
-			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
 			return;
 		}
 		case VT_KEYED_SET: {
@@ -789,6 +845,9 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			Variant v = as_binding_marshal_arg(p_gen, 1, AS_KIND_VALUE);
 			bool valid = false;
 			self->set_keyed(key, v, valid);
+			if (self_native) {
+				ASNativeValueStorage::variant_to_native(b->type, *self, self_slot);
+			}
 			return;
 		}
 		case VT_OP: {
@@ -799,12 +858,13 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			Variant right;
 			const Variant *right_ptr = nullptr;
 			if (b->arg_count > 0) {
-				right = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
+				Variant::Type pt = b->param_types.is_empty() ? Variant::NIL : b->param_types[0];
+				right = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0], pt);
 				right_ptr = &right;
 			}
 			VariantInternal::initialize(&ret, b->return_type);
 			b->op_eval(self, right_ptr, &ret);
-			as_binding_marshal_return(p_gen, b->return_kind, ret);
+			as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
 			return;
 		}
 		case VT_CONV: {
@@ -820,7 +880,11 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 					return;
 				case AS_KIND_VALUE: {
 					Variant s = Variant((String)*self);
-					p_gen->SetReturnObject(&s); // String 的存储也是一个 Variant。
+					if (ASNativeValueStorage::is_native_storage_type(b->return_type)) {
+						ASNativeValueStorage::write_native_return(p_gen, b->return_type, s);
+					} else {
+						p_gen->SetReturnObject(&s); // String 的存储也是一个 Variant。
+					}
 					return;
 				}
 				default:

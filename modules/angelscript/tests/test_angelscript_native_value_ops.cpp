@@ -405,3 +405,21 @@ void as_native_vo_storage_slot_helpers() {
 	ASNativeValueStorage::variant_to_native(Variant::VECTOR2, Variant(Vector2(3, 4)), &slot);
 	CHECK_EQ(slot, Vector2(3, 4));
 }
+
+void as_native_vo_native_storage_round_trip() {
+	if (!ASNativeValueStorage::is_native_storage_type(Variant::VECTOR2)) {
+		return; // 未启用平台跳过（与今日 generic 行为一致）。
+	}
+	double out = 0.0;
+	CHECK(run_double(R"(
+		double main() {
+			Vector2 a(3.0, 4.0);
+			Vector2 b = a;
+			b.x = 6.0;
+			Vector2 c = a + b;          // (9, 8)
+			c.y = c.y * 2.0;            // (9, 16)
+			return c.x + c.y + a.length(); // 9 + 16 + 5 = 30
+		}
+	)", &out));
+	CHECK(nearly(out, 30.0));
+}

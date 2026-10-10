@@ -178,6 +178,7 @@ bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::T
 	(void)p_decl;
 	return false;
 #else
+	return false; // P3 Task3：先走存储感知 generic，Task4 再启用原生快路径。
 	void *fn = nullptr;
 	switch (p_type) {
 		case Variant::VECTOR2:
@@ -230,6 +231,7 @@ bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Varian
 	(void)p_decl;
 	return false;
 #else
+	return false; // P3 Task3：先走存储感知 generic，Task4 再启用原生快路径。
 	const String m = String(p_method);
 	switch (p_type) {
 		case Variant::VECTOR2:

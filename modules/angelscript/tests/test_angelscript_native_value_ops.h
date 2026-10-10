@@ -47,6 +47,7 @@ void as_native_vo_vector2_methods_all();
 void as_native_vo_vector3_methods_all();
 void as_native_vo_integer_methods_all();
 void as_native_vo_storage_slot_helpers();
+void as_native_vo_native_storage_round_trip();
 
 #ifndef ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
 
@@ -100,6 +101,10 @@ TEST_CASE("[AngelScript] native value ops integer methods all") {
 
 TEST_CASE("[AngelScript] native value ops native storage slot helpers") {
 	as_native_vo_storage_slot_helpers();
+}
+
+TEST_CASE("[AngelScript] native value ops native storage round trip") {
+	as_native_vo_native_storage_round_trip();
 }
 
 #endif // ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
