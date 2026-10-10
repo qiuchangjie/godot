@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "../as_engine.h"
+#include "../binding/as_binding_decl.h"
 #include "../binding/as_binding_object.h"
 #include "../binding/as_binding_plan.h"
 #include "../binding/as_binding_value_types.h"
@@ -36,11 +37,73 @@
 #define ANGELSCRIPT_BINDING_OBJECT_TESTS_IMPL
 #include "test_angelscript_binding_object.h"
 
+#include "core/os/memory.h"
 #include "core/string/print_string.h"
+#include "scene/2d/node_2d.h"
+#include "scene/2d/sprite_2d.h"
+#include "scene/main/node.h"
 
 #include <angelscript.h>
 
 static bool g_object_bound = false;
+
+// 测试用宿主拥有节点：AS 侧无法 free 非 RefCounted 对象，脚本只能拿到非拥有句柄，
+// 回收责任留在宿主，避免脚本创建的节点残留到进程退出污染 ObjectDB。
+namespace {
+
+Node *g_test_parent = nullptr;
+Node *g_test_child = nullptr;
+Node2D *g_test_node2d = nullptr;
+Sprite2D *g_test_sprite = nullptr;
+
+void probe_test_parent(asIScriptGeneric *p_gen) {
+	if (g_test_parent == nullptr) {
+		g_test_parent = memnew(Node);
+	}
+	p_gen->SetReturnObject(as_handle_encode(g_test_parent, AS_KIND_OBJECT_NONOWNING));
+}
+
+void probe_test_child(asIScriptGeneric *p_gen) {
+	if (g_test_child == nullptr) {
+		g_test_child = memnew(Node);
+	}
+	p_gen->SetReturnObject(as_handle_encode(g_test_child, AS_KIND_OBJECT_NONOWNING));
+}
+
+void probe_test_node2d(asIScriptGeneric *p_gen) {
+	if (g_test_node2d == nullptr) {
+		g_test_node2d = memnew(Node2D);
+	}
+	p_gen->SetReturnObject(as_handle_encode(g_test_node2d, AS_KIND_OBJECT_NONOWNING));
+}
+
+void probe_test_sprite(asIScriptGeneric *p_gen) {
+	if (g_test_sprite == nullptr) {
+		g_test_sprite = memnew(Sprite2D);
+	}
+	p_gen->SetReturnObject(as_handle_encode(g_test_sprite, AS_KIND_OBJECT_NONOWNING));
+}
+
+void release_test_nodes() {
+	if (g_test_child != nullptr) {
+		memdelete(g_test_child);
+		g_test_child = nullptr;
+	}
+	if (g_test_parent != nullptr) {
+		memdelete(g_test_parent);
+		g_test_parent = nullptr;
+	}
+	if (g_test_node2d != nullptr) {
+		memdelete(g_test_node2d);
+		g_test_node2d = nullptr;
+	}
+	if (g_test_sprite != nullptr) {
+		memdelete(g_test_sprite);
+		g_test_sprite = nullptr;
+	}
+}
+
+} // namespace
 
 // 只绑定测试需要的那条继承链，避免把整个 ClassDB 都挂上去（默认全量留给 T6 的 e2e 验证）。
 // 注册必须两遍：先全部骨架，再挂成员，最后枚举；否则跨类引用的签名会解析失败，
@@ -69,6 +132,11 @@ static void ensure_object_binding(asIScriptEngine *p_engine) {
 		ASBindingObject::register_class(c, p_engine);
 	}
 	ASBindingObject::register_enums(plan.get_enums(), p_engine);
+
+	p_engine->RegisterGlobalFunction("Node@ probe_test_parent()", asFUNCTION(probe_test_parent), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("Node@ probe_test_child()", asFUNCTION(probe_test_child), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("Node2D@ probe_test_node2d()", asFUNCTION(probe_test_node2d), asCALL_GENERIC);
+	p_engine->RegisterGlobalFunction("Sprite2D@ probe_test_sprite()", asFUNCTION(probe_test_sprite), asCALL_GENERIC);
 }
 
 static bool nearly(double p_a, double p_b) {
@@ -163,8 +231,8 @@ void as_binding_object_method_call() {
 	double out = 0.0;
 	if (!run_double(
 				"double main() {"
-				"  Node @parent = Node();"
-				"  Node @child = Node();"
+				"  Node @parent = probe_test_parent();"
+				"  Node @child = probe_test_child();"
 				"  parent.add_child(child, false, 0);"
 				"  int64 count = parent.get_child_count(false);"
 				"  return count == 1 ? 1.0 : 0.0;"
@@ -173,15 +241,15 @@ void as_binding_object_method_call() {
 		return;
 	}
 	CHECK(nearly(out, 1.0)); // 方法跳板：实参编组 + Object 方法调用 + int64 返回。
-	// 注：非 RefCounted 对象在 AS 侧无法释放（Object::free 是 GDVIRTUAL，M2 不绑定），
-	// 脚本创建的 Node 会存活到进程退出——这是 M2 记录的已知限制。
+	// 节点由宿主拥有，测试结束回收，避免污染 ObjectDB（AS 侧无法 free 非 RefCounted）。
+	release_test_nodes();
 }
 
 void as_binding_object_property_access() {
 	double out = 0.0;
 	if (!run_double(
 				"double main() {"
-				"  Node2D @n = Node2D();"
+				"  Node2D @n = probe_test_node2d();"
 				"  Vector2 p(3, 4);"
 				"  n.position = p;"
 				"  Vector2 q = n.position;"
@@ -191,14 +259,15 @@ void as_binding_object_property_access() {
 		return;
 	}
 	CHECK(nearly(out, 1.0)); // virtual property 读写 + 值类型编组。
+	release_test_nodes();
 }
 
 void as_binding_object_upcast() {
 	double out = 0.0;
 	if (!run_double(
 				"double main() {"
-				"  Node @n = Sprite2D();"
-				"  Object @o = Node2D();"
+				"  Node @n = probe_test_sprite();"
+				"  Object @o = probe_test_node2d();"
 				"  bool ok = (n !is null) && (o !is null);"
 				"  return ok ? 1.0 : 0.0;"
 				"}",
@@ -206,6 +275,7 @@ void as_binding_object_upcast() {
 		return;
 	}
 	CHECK(nearly(out, 1.0)); // opImplCast：对每个祖先各注册一条。
+	release_test_nodes();
 }
 
 void as_binding_object_refcount_lifetime() {
