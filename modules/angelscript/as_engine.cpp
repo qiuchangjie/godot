@@ -95,7 +95,7 @@ static void _as_log_int(asIScriptGeneric *p_generic) {
 // 因此热更脚本的字符串输出走这里。Godot `String` 值类型以 Variant 为存储，
 // 直接复用 AS_KIND_VALUE 编组。
 static void _as_log_string(asIScriptGeneric *p_generic) {
-	print_line(String(as_binding_marshal_arg(p_generic, 0, AS_KIND_VALUE)));
+	print_line(String(as_binding_marshal_arg(p_generic, 0, AS_KIND_VALUE, Variant::STRING)));
 }
 
 // M3 信号链（设计 §5）的三个宿主内建。AS 脚本类不是 Node 子类，脚本内无法引用承载它的
@@ -119,8 +119,8 @@ static void _as_emit_signal(asIScriptGeneric *p_generic) {
 		}
 		return;
 	}
-	const Variant name_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
-	const Variant args_v = as_binding_marshal_arg(p_generic, 2, AS_KIND_VALUE);
+	const Variant name_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE, Variant::STRING);
+	const Variant args_v = as_binding_marshal_arg(p_generic, 2, AS_KIND_VALUE, Variant::ARRAY);
 	if (args_v.get_type() != Variant::ARRAY) {
 		asIScriptContext *ctx = asGetActiveContext();
 		if (ctx != nullptr) {
@@ -145,16 +145,16 @@ static void _as_emit_signal(asIScriptGeneric *p_generic) {
 // 生成指向宿主对象方法的 Callable，供 Object.connect 接收脚本信号。
 static void _as_callable(asIScriptGeneric *p_generic) {
 	Object *obj = as_handle_decode(p_generic->GetArgObject(0), AS_KIND_OBJECT_NONOWNING);
-	const Variant method_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
+	const Variant method_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE, Variant::STRING);
 	const Variant ret = Callable(obj, StringName(method_v));
-	as_binding_marshal_return(p_generic, AS_KIND_VALUE, ret);
+	as_binding_marshal_return(p_generic, AS_KIND_VALUE, ret, Variant::CALLABLE);
 }
 
 // M5 互操作 L2：AS -> 宿主的唯一入口。把 Array 展平为 Variant 数组后交给宿主桥，
 // 未安装或宿主报错时返回空 Variant 并记录诊断，绝不崩溃（spec §6.2）。
 static void _as_host_call(asIScriptGeneric *p_generic) {
 	const int method_id = (int)p_generic->GetArgDWord(0);
-	const Variant args_value = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
+	const Variant args_value = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE, Variant::ARRAY);
 
 	// storage 必须活到 invoke 返回：宿主按 const Variant* 读取连续元素。
 	Vector<Variant> storage;

@@ -47,7 +47,12 @@ namespace {
 struct ASUtilityBinding {
 	StringName name;
 	Vector<ASBindingKind> param_kinds;
+	// 形参/返回值的静态 Variant 类型：编组入口据此判定「原生 T 槽」还是「Variant 盒」。
+	// 上游 @GlobalScope 元数据可能退化为 NIL（如经 FUNCBINDVR* 注册的 lerp/clamp），
+	// 此时按 Variant 盒编组；一旦上游补全类型，原生化类型会在此被正确识别。
+	Vector<Variant::Type> param_types;
 	ASBindingKind return_kind = AS_KIND_VOID;
+	Variant::Type return_type = Variant::NIL;
 };
 
 void set_exception(const String &p_message) {
@@ -70,7 +75,8 @@ void generic_utility_call(asIScriptGeneric *p_gen) {
 	Vector<Variant> args;
 	args.resize(argc);
 	for (int i = 0; i < argc; i++) {
-		args.write[i] = as_binding_marshal_arg(p_gen, i, binding->param_kinds[i]);
+		const Variant::Type stored_type = i < binding->param_types.size() ? binding->param_types[i] : Variant::NIL;
+		args.write[i] = as_binding_marshal_arg(p_gen, i, binding->param_kinds[i], stored_type);
 	}
 	Vector<const Variant *> argptrs;
 	argptrs.resize(argc);
@@ -89,7 +95,7 @@ void generic_utility_call(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: %s() failed (%d)", binding->name, (int)ce.error));
 		return;
 	}
-	as_binding_marshal_return(p_gen, binding->return_kind, ret);
+	as_binding_marshal_return(p_gen, binding->return_kind, ret, binding->return_type);
 }
 
 // 已注册 @GlobalScope 工具函数的引擎集合：RegisterGlobalFunction 重复同名声明会返回
@@ -115,8 +121,10 @@ void register_global_functions(asIScriptEngine *p_engine) {
 		ASUtilityBinding *binding = memnew(ASUtilityBinding);
 		binding->name = name;
 		binding->return_kind = (info.return_val.type == Variant::NIL) ? AS_KIND_VOID : ASBindingDecl::resolve(info.return_val).kind;
+		binding->return_type = info.return_val.type;
 		for (const PropertyInfo &arg : info.arguments) {
 			binding->param_kinds.push_back(ASBindingDecl::resolve(arg).kind);
+			binding->param_types.push_back(arg.type);
 		}
 
 		const CharString decl_utf8 = decl.utf8();

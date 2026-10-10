@@ -697,6 +697,9 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 				set_exception("angelscript: null self in value constructor");
 				return;
 			}
+			// 原生 lifecycle 注册成功时，本 generic 构造不会被注册（见 register_type_members），
+			// 故 self_native 仅作防御性兜底：若出现「骨架成功但 lifecycle 未接管」的中间态，
+			// 仍按原生槽正确构造，绝不退化成按 Variant 写。
 			if (self_native) {
 				Callable::CallError err;
 				const Variant *noargs[1] = { nullptr };
@@ -714,7 +717,7 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			return;
 		}
 		case VT_CTOR_COPY: {
-			if (self_native) {
+			if (self_native) { // 防御性兜底，理由同 VT_CTOR_DEFAULT。
 				Variant v = ASNativeValueStorage::native_to_variant(b->type, p_gen->GetArgObject(0));
 				ASNativeValueStorage::variant_to_native(b->type, v, self_slot);
 				return;
@@ -759,7 +762,7 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 			return;
 		}
 		case VT_ASSIGN: {
-			if (self_native) {
+			if (self_native) { // 防御性兜底，理由同 VT_CTOR_DEFAULT。
 				Variant v = ASNativeValueStorage::native_to_variant(b->type, p_gen->GetArgObject(0));
 				ASNativeValueStorage::variant_to_native(b->type, v, self_slot);
 				p_gen->SetReturnAddress(self_slot);
@@ -885,12 +888,10 @@ void ASBindingValueTypes::generic_value_call(asIScriptGeneric *p_gen) {
 					*(bool *)p_gen->GetAddressOfReturnLocation() = (bool)*self;
 					return;
 				case AS_KIND_VALUE: {
+					// VT_CONV 只由 register_variant_conversions 生成，返回类型恒为 String（非原生
+					// 存储），因此无需原生返回分支；String 的存储本身就是一颗 Variant。
 					Variant s = Variant((String)*self);
-					if (ASNativeValueStorage::is_native_storage_type(b->return_type)) {
-						ASNativeValueStorage::write_native_return(p_gen, b->return_type, s);
-					} else {
-						p_gen->SetReturnObject(&s); // String 的存储也是一个 Variant。
-					}
+					p_gen->SetReturnObject(&s);
 					return;
 				}
 				default:

@@ -378,10 +378,10 @@ void compile_script_produces_loadable_bytecode() {
 }
 
 void as_bytecode_rejects_stale_format_version() {
-	// v1 是原生值存储（P3）之前写出的 `.asb` 布局版本。容器版本提升后，旧布局的
-	// 字节码必须被显式拒绝，而不是被静默按新布局反序列化（只有 v1 的布局与
-	// 当前版本不兼容；此断言在版本仍为 1 时会因「被误接受」而失败）。
-	const uint32_t stale_version = 1;
+	// 原生值存储（P3）提升了容器布局版本；任何早于当前版本的 `.asb` 都必须被显式拒绝，
+	// 而不是被静默按新布局反序列化。用 `FORMAT_VERSION - 1` 表达「上一版」，使该断言
+	// 随版本提升自动保持「拒绝前一版布局」的语义。
+	const uint32_t stale_version = AS_BYTECODE_FORMAT_VERSION - 1;
 
 	Vector<StringName> types;
 	types.push_back(StringName("Node"));
