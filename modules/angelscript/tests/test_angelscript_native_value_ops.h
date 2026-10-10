@@ -39,6 +39,7 @@ void as_native_vo_vector2_opadd();
 void as_native_vo_vector2_arith_assign();
 void as_native_vo_vector3_arith_assign();
 void as_native_vo_integer_vectors();
+void as_native_vo_op_equals();
 
 #ifndef ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
 
@@ -60,6 +61,10 @@ TEST_CASE("[AngelScript] native value ops vector3 arith assign") {
 
 TEST_CASE("[AngelScript] native value ops integer vectors") {
 	as_native_vo_integer_vectors();
+}
+
+TEST_CASE("[AngelScript] native value ops op equals") {
+	as_native_vo_op_equals();
 }
 
 #endif // ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL

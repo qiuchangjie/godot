@@ -156,3 +156,20 @@ void as_native_vo_integer_vectors() {
 	CHECK(nearly(out, 2.0 + 4.0 + 9.0)); // 整数除法 (7/3,8/2)=(2,4) + s.y=9
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
+
+void as_native_vo_op_equals() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double(
+				"double main() {"
+				"  Vector2 a(1, 2);"
+				"  Vector2 b(1, 2);"
+				"  Vector2 c(1, 3);"
+				"  return (a == b) && !(a == c) ? 1.0 : 0.0;"
+				"}",
+				&out)) {
+		return;
+	}
+	CHECK(nearly(out, 1.0));
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}

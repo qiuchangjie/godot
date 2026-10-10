@@ -79,6 +79,13 @@ Variant *thunk_assign(Variant *self, const Variant *other) {
 	return self;
 }
 
+// opEquals：比较两个存储的原生值。AS 侧声明为返回 bool，按值返回即可（见 spec §4.5）。
+template <typename T>
+bool thunk_equals(const Variant *self, const Variant *other) {
+	ASNativeValueOps::note_thunk_call();
+	return (const T &)*self == (const T &)*other;
+}
+
 // 按运算符名取该类型的原生 thunk 函数指针；未覆盖的运算符返回 nullptr。
 template <typename T>
 void *thunk_for_op(const String &p_op) {
@@ -96,6 +103,9 @@ void *thunk_for_op(const String &p_op) {
 	}
 	if (p_op == "opAssign") {
 		return (void *)&thunk_assign<T>;
+	}
+	if (p_op == "opEquals") {
+		return (void *)&thunk_equals<T>;
 	}
 	return nullptr;
 }
