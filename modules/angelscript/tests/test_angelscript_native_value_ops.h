@@ -43,6 +43,9 @@ void as_native_vo_op_equals();
 void as_native_vo_method_core();
 void as_native_vo_cross();
 void as_native_vo_geometry();
+void as_native_vo_vector2_methods_all();
+void as_native_vo_vector3_methods_all();
+void as_native_vo_integer_methods_all();
 
 #ifndef ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
 
@@ -80,6 +83,18 @@ TEST_CASE("[AngelScript] native value ops cross") {
 
 TEST_CASE("[AngelScript] native value ops geometry") {
 	as_native_vo_geometry();
+}
+
+TEST_CASE("[AngelScript] native value ops vector2 methods all") {
+	as_native_vo_vector2_methods_all();
+}
+
+TEST_CASE("[AngelScript] native value ops vector3 methods all") {
+	as_native_vo_vector3_methods_all();
+}
+
+TEST_CASE("[AngelScript] native value ops integer methods all") {
+	as_native_vo_integer_methods_all();
 }
 
 #endif // ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL

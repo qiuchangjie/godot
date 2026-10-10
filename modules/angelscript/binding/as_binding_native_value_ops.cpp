@@ -30,6 +30,7 @@
 
 #include "as_binding_native_value_ops.h"
 
+#include "core/error/error_macros.h"
 #include "core/math/vector2.h"
 #include "core/math/vector2i.h"
 #include "core/math/vector3.h"
@@ -168,6 +169,15 @@ static int g_native_thunk_calls = 0;
 
 // 命中即原生注册并返回 true（调用方跳过 generic 跳板）；未命中返回 false。
 bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::Type p_type, const String &p_op, const String &p_decl) {
+#if !AS_NATIVE_VALUE_OPS_ENABLED
+	// 未验证平台：不使用原生调用约定，整体回退 generic（spec §6）。
+	(void)p_engine;
+	(void)p_type_name;
+	(void)p_type;
+	(void)p_op;
+	(void)p_decl;
+	return false;
+#else
 	void *fn = nullptr;
 	switch (p_type) {
 		case Variant::VECTOR2:
@@ -192,19 +202,34 @@ bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::T
 		g_native_registration_count++;
 		return true;
 	}
+	// 注册失败时 asCScriptEngine 已进入 configFailed，无法再回退 generic：必须响亮报错。
+	ERR_PRINT(vformat("AngelScript: failed to register native value operator '%s' for '%s' (decl: %s).", p_op, p_type_name, p_decl));
 	return false;
+#endif
 }
 
 // 命中即原生注册并返回 true，否则返回 false（调用方继续 generic 注册）。
+#if AS_NATIVE_VALUE_OPS_ENABLED
 static bool reg_method(asIScriptEngine *p_engine, const String &p_type_name, const String &p_decl, void *p_fn) {
 	if (p_engine->RegisterObjectMethod(p_type_name.utf8().get_data(), p_decl.utf8().get_data(), asFUNCTION(p_fn), asCALL_CDECL_OBJFIRST) >= 0) {
 		g_native_registration_count++;
 		return true;
 	}
+	ERR_PRINT(vformat("AngelScript: failed to register native value method for '%s' (decl: %s).", p_type_name, p_decl));
 	return false;
 }
+#endif
 
 bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Variant::Type p_type, const StringName &p_method, const String &p_decl) {
+#if !AS_NATIVE_VALUE_OPS_ENABLED
+	// 未验证平台：不使用原生调用约定，整体回退 generic（spec §6）。
+	(void)p_engine;
+	(void)p_type_name;
+	(void)p_type;
+	(void)p_method;
+	(void)p_decl;
+	return false;
+#else
 	const String m = String(p_method);
 	switch (p_type) {
 		case Variant::VECTOR2:
@@ -357,6 +382,7 @@ bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Varian
 			break;
 	}
 	return false; // 未覆盖的方法走 generic 回退。
+#endif
 }
 
 int native_registration_count() { return g_native_registration_count; }

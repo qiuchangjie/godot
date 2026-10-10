@@ -35,6 +35,10 @@
 #define ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
 #include "test_angelscript_native_value_ops.h"
 
+#include "core/math/vector2.h"
+#include "core/math/vector2i.h"
+#include "core/math/vector3.h"
+#include "core/math/vector3i.h"
 #include "core/string/print_string.h"
 
 #include <angelscript.h>
@@ -128,10 +132,10 @@ void as_native_vo_vector2_arith_assign() {
 void as_native_vo_vector3_arith_assign() {
 	double out = 0.0;
 	ASNativeValueOps::reset_native_thunk_calls();
-	if (!run_double("double main() { Vector3 a(1, 2, 3); Vector3 b(4, 5, 6); Vector3 c = a + b; Vector3 d = b - a; Vector3 e = a * b; Vector3 f; f = c; return f.x + d.y + e.z; }", &out)) {
+	if (!run_double("double main() { Vector3 a(1, 2, 3); Vector3 b(4, 5, 6); Vector3 c = a + b; Vector3 d = b - a; Vector3 m = a * b; Vector3 q = b / a; Vector3 f; f = c; return f.x + d.y + m.z + q.x; }", &out)) {
 		return;
 	}
-	CHECK(nearly(out, 26.0)); // f.x=5 (a+b) + d.y=3 (b-a) + e.z=18 (a*b)
+	CHECK(nearly(out, 30.0)); // f.x=5 (a+b) + d.y=3 (b-a) + m.z=18 (a*b) + q.x=4 (b/a)
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
 
@@ -162,15 +166,16 @@ void as_native_vo_op_equals() {
 	ASNativeValueOps::reset_native_thunk_calls();
 	if (!run_double(
 				"double main() {"
-				"  Vector2 a(1, 2);"
-				"  Vector2 b(1, 2);"
-				"  Vector2 c(1, 3);"
-				"  return (a == b) && !(a == c) ? 1.0 : 0.0;"
+				"  Vector2 a(1, 2); Vector2 b(1, 2); Vector2 c(1, 3);"
+				"  Vector3 p(1, 2, 3); Vector3 q(1, 2, 3); Vector3 s(1, 2, 4);"
+				"  Vector2i u(1, 2); Vector2i v(1, 2); Vector2i w(2, 2);"
+				"  Vector3i x(1, 2, 3); Vector3i y(1, 2, 3); Vector3i z(1, 2, 4);"
+				"  return (a == b) && !(a == c) && (p == q) && !(p == s) && (u == v) && !(u == w) && (x == y) && !(x == z) ? 1.0 : 0.0;"
 				"}",
 				&out)) {
 		return;
 	}
-	CHECK(nearly(out, 1.0));
+	CHECK(nearly(out, 1.0)); // 四类型 opEquals：相等为 true、不相等为 false
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
 
@@ -189,7 +194,9 @@ void as_native_vo_method_core() {
 				&out)) {
 		return;
 	}
-	CHECK(out > 0.0);
+	// a=(3,4): normalized=(0.6,0.8), length=5, distance_to((0,0))=5, dot=0；
+	// b 为零向量，normalized 应为 (0,0)（与 generic 语义一致）。
+	CHECK(nearly(out, 11.4));
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
 
@@ -229,5 +236,157 @@ void as_native_vo_geometry() {
 		return;
 	}
 	CHECK(nearly(out, 1.5707963267948966));
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
+
+// 全方法覆盖 + C++ 参照值 parity：调用每个已原生化的方法，与相同表达式用
+// Godot 原生 Vector2 计算的结果对比（这正是 generic 路径原先的期望值）。
+void as_native_vo_vector2_methods_all() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double(
+				"double main() {"
+				"  Vector2 a(3, 4); Vector2 b(1, 0); Vector2 c(0, 1);"
+				"  Vector2 lo(-1, -1); Vector2 hi(1, 1);"
+				"  double r = 0.0;"
+				"  r += a.length();"
+				"  r += a.length_squared();"
+				"  r += a.dot(b);"
+				"  r += a.distance_to(b);"
+				"  r += a.distance_squared_to(b);"
+				"  r += a.cross(b);"
+				"  r += a.angle();"
+				"  r += a.angle_to(b);"
+				"  r += a.angle_to_point(b);"
+				"  r += a.normalized().x + a.normalized().y;"
+				"  r += a.direction_to(b).x + a.direction_to(b).y;"
+				"  r += a.project(b).x + a.project(b).y;"
+				"  r += a.slide(b).x + a.slide(b).y;"
+				"  r += a.bounce(b).x + a.bounce(b).y;"
+				"  r += a.reflect(b).x + a.reflect(b).y;"
+				"  r += a.lerp(c, 0.0).x + a.lerp(c, 1.0).y;"
+				"  r += a.slerp(c, 0.5).x + a.slerp(c, 0.5).y;"
+				"  r += a.move_toward(c, 100.0).x + a.move_toward(c, 100.0).y;"
+				"  r += a.clamp(lo, hi).x + a.clamp(lo, hi).y;"
+				"  r += a.rotated(0.5).x + a.rotated(0.5).y;"
+				"  r += a.posmod(2.0).x + a.posmod(2.0).y;"
+				"  return r;"
+				"}",
+				&out)) {
+		return;
+	}
+	Vector2 a(3, 4), b(1, 0), c(0, 1), lo(-1, -1), hi(1, 1);
+	double e = 0.0;
+	e += a.length();
+	e += a.length_squared();
+	e += a.dot(b);
+	e += a.distance_to(b);
+	e += a.distance_squared_to(b);
+	e += a.cross(b);
+	e += a.angle();
+	e += a.angle_to(b);
+	e += a.angle_to_point(b);
+	e += a.normalized().x + a.normalized().y;
+	e += a.direction_to(b).x + a.direction_to(b).y;
+	e += a.project(b).x + a.project(b).y;
+	e += a.slide(b).x + a.slide(b).y;
+	e += a.bounce(b).x + a.bounce(b).y;
+	e += a.reflect(b).x + a.reflect(b).y;
+	e += a.lerp(c, 0.0).x + a.lerp(c, 1.0).y;
+	e += a.slerp(c, 0.5).x + a.slerp(c, 0.5).y;
+	e += a.move_toward(c, 100.0).x + a.move_toward(c, 100.0).y;
+	e += a.clamp(lo, hi).x + a.clamp(lo, hi).y;
+	e += a.rotated(0.5).x + a.rotated(0.5).y;
+	e += a.posmod(2.0).x + a.posmod(2.0).y;
+	CHECK(nearly(out, e));
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
+
+void as_native_vo_vector3_methods_all() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double(
+				"double main() {"
+				"  Vector3 a(1, 2, 2); Vector3 b(1, 0, 0); Vector3 c(0, 1, 0);"
+				"  Vector3 lo(-1, -1, -1); Vector3 hi(1, 1, 1);"
+				"  double r = 0.0;"
+				"  r += a.length();"
+				"  r += a.length_squared();"
+				"  r += a.dot(b);"
+				"  r += a.distance_to(b);"
+				"  r += a.distance_squared_to(b);"
+				"  r += a.cross(b).z;"
+				"  r += a.angle_to(b);"
+				"  r += a.direction_to(b).x + a.direction_to(b).y + a.direction_to(b).z;"
+				"  r += a.project(b).x + a.project(b).y + a.project(b).z;"
+				"  r += a.slide(b).x + a.slide(b).y + a.slide(b).z;"
+				"  r += a.bounce(b).x + a.bounce(b).y + a.bounce(b).z;"
+				"  r += a.reflect(b).x + a.reflect(b).y + a.reflect(b).z;"
+				"  r += a.normalized().x + a.normalized().y + a.normalized().z;"
+				"  r += a.lerp(c, 0.0).x + a.lerp(c, 1.0).y + a.lerp(c, 1.0).z;"
+				"  r += a.slerp(c, 0.5).x + a.slerp(c, 0.5).y + a.slerp(c, 0.5).z;"
+				"  r += a.move_toward(c, 100.0).x + a.move_toward(c, 100.0).y + a.move_toward(c, 100.0).z;"
+				"  r += a.clamp(lo, hi).x + a.clamp(lo, hi).y + a.clamp(lo, hi).z;"
+				"  return r;"
+				"}",
+				&out)) {
+		return;
+	}
+	Vector3 a(1, 2, 2), b(1, 0, 0), c(0, 1, 0), lo(-1, -1, -1), hi(1, 1, 1);
+	double e = 0.0;
+	e += a.length();
+	e += a.length_squared();
+	e += a.dot(b);
+	e += a.distance_to(b);
+	e += a.distance_squared_to(b);
+	e += a.cross(b).z;
+	e += a.angle_to(b);
+	e += a.direction_to(b).x + a.direction_to(b).y + a.direction_to(b).z;
+	e += a.project(b).x + a.project(b).y + a.project(b).z;
+	e += a.slide(b).x + a.slide(b).y + a.slide(b).z;
+	e += a.bounce(b).x + a.bounce(b).y + a.bounce(b).z;
+	e += a.reflect(b).x + a.reflect(b).y + a.reflect(b).z;
+	e += a.normalized().x + a.normalized().y + a.normalized().z;
+	e += a.lerp(c, 0.0).x + a.lerp(c, 1.0).y + a.lerp(c, 1.0).z;
+	e += a.slerp(c, 0.5).x + a.slerp(c, 0.5).y + a.slerp(c, 0.5).z;
+	e += a.move_toward(c, 100.0).x + a.move_toward(c, 100.0).y + a.move_toward(c, 100.0).z;
+	e += a.clamp(lo, hi).x + a.clamp(lo, hi).y + a.clamp(lo, hi).z;
+	CHECK(nearly(out, e));
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
+
+void as_native_vo_integer_methods_all() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double(
+				"double main() {"
+				"  Vector2i a(3, 4); Vector2i b(1, 0);"
+				"  Vector3i p(1, 2, 2); Vector3i q(4, 5, 6);"
+				"  double r = 0.0;"
+				"  r += a.length();"
+				"  r += a.length_squared();"
+				"  r += a.distance_to(b);"
+				"  r += a.distance_squared_to(b);"
+				"  r += p.length();"
+				"  r += p.length_squared();"
+				"  r += p.distance_to(q);"
+				"  r += p.distance_squared_to(q);"
+				"  return r;"
+				"}",
+				&out)) {
+		return;
+	}
+	Vector2i a(3, 4), b(1, 0);
+	Vector3i p(1, 2, 2), q(4, 5, 6);
+	double e = 0.0;
+	e += a.length();
+	e += a.length_squared();
+	e += a.distance_to(b);
+	e += a.distance_squared_to(b);
+	e += p.length();
+	e += p.length_squared();
+	e += p.distance_to(q);
+	e += p.distance_squared_to(q);
+	CHECK(nearly(out, e));
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }

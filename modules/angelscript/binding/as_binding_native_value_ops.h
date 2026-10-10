@@ -34,6 +34,17 @@
 
 #include <angelscript.h>
 
+// 原生调用约定（asCALL_CDECL_OBJFIRST）的 thunk 签名与具体平台 ABI 绑定，必须逐平台验证。
+// 这里只在已锁定的平台上启用；其余平台（含 AS_MAX_PORTABILITY：Emscripten/PPC/RISC-V 等）
+// 整体回退既有 generic 路径。注意：在 AS_MAX_PORTABILITY 平台对非 asCALL_GENERIC 的调用会让
+// asCScriptEngine 永久进入 configFailed，所以必须在注册前就跳过，而不是靠注册失败回退。
+// 扩展平台时，在下方条件里追加已验证的组合即可（见 spec §6）。
+#if !defined(AS_MAX_PORTABILITY) && defined(_MSC_VER) && defined(_M_X64)
+#define AS_NATIVE_VALUE_OPS_ENABLED 1
+#else
+#define AS_NATIVE_VALUE_OPS_ENABLED 0
+#endif
+
 // 值类型原生运算符/方法注册入口（P1）。
 //
 // 命中表项的运算符/方法走原生 C++ thunk，绕过 asCALL_GENERIC 跳板；未命中返回 false，
