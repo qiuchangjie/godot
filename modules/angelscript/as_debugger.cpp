@@ -33,6 +33,7 @@
 #include "as_script_language.h"
 
 #include "binding/as_binding_decl.h"
+#include "binding/as_binding_native_storage.h"
 #include "binding/as_binding_object.h"
 #include "binding/as_binding_value_types.h"
 
@@ -267,8 +268,16 @@ Variant ASDebugger::decode_var(void *p_addr, int p_type_id, asIScriptEngine *p_e
 	// 绑定值类型：34 个内建类型与 Variant 自身在 AS 侧都是独立的 asOBJ_VALUE，
 	// 它们的底层存储就是一块 Godot Variant（as_binding_value_types.cpp:591-594）。
 	// 注意这里的「统一」不含上面的 string。
-	if (!is_handle && !is_script_object && ASBindingDecl::as_name_to_variant_type(type_name) != Variant::NIL) {
-		return *reinterpret_cast<const Variant *>(p_addr);
+	if (!is_handle && !is_script_object) {
+		const Variant::Type bound_type = ASBindingDecl::as_name_to_variant_type(type_name);
+		// 原生存储类型（Vector2/3/2i/3i）：槽里是原生 T，不是 Variant，必须按类型解码，
+		// 否则会把 8/12 字节当 24 字节的 Variant 读（越界读 → SIGSEGV）。
+		if (ASNativeValueStorage::is_native_storage_type(bound_type)) {
+			return ASNativeValueStorage::native_to_variant(bound_type, p_addr);
+		}
+		if (bound_type != Variant::NIL) {
+			return *reinterpret_cast<const Variant *>(p_addr);
+		}
 	}
 
 	// 一次解引用规则：GetAddressOfVar / GetAddressOfProperty 已经替我们解过一层

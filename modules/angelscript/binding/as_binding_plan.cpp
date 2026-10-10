@@ -229,8 +229,10 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		}
 		m.is_static = (mi.flags & METHOD_FLAG_STATIC);
 		m.return_kind = (mi.return_val.type == Variant::NIL) ? AS_KIND_VOID : ASBindingDecl::resolve(mi.return_val).kind;
+		m.return_type = mi.return_val.type;
 		for (const PropertyInfo &pi : mi.arguments) {
 			m.param_kinds.push_back(ASBindingDecl::resolve(pi).kind);
+			m.param_types.push_back(pi.type);
 		}
 		c.methods.push_back(m);
 	}
@@ -277,6 +279,7 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		bp.name = String(pi.name);
 		bp.as_type = t.as_name;
 		bp.kind = t.kind;
+		bp.type = pi.type;
 		bp.read_only = (pi.usage & PROPERTY_USAGE_READ_ONLY);
 		c.properties.push_back(bp);
 	}

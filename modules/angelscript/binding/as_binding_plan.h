@@ -47,6 +47,10 @@ struct ASBindingMethod {
 	// 跳板按 AS_KIND_* 决定如何把实参编组为 Variant；由 ASBindingDecl::resolve 产出，与 as_decl 同源。
 	Vector<ASBindingKind> param_kinds;
 	ASBindingKind return_kind = AS_KIND_VOID;
+	// 与 param_kinds 平行：形参/返回的 Variant::Type（标量为 NIL）。
+	// 对象桥跳板据此识别原生存储类型（Vector2/3/2i/3i）——它们的槽是原生 T，不是 Variant。
+	Vector<Variant::Type> param_types;
+	Variant::Type return_type = Variant::NIL;
 };
 
 struct ASBindingProperty {
@@ -54,6 +58,8 @@ struct ASBindingProperty {
 	String as_type;
 	// 供 as_binding_object.cpp 直接使用，避免再从 as_type 字符串反推 marshal kind。
 	ASBindingKind kind = AS_KIND_VOID;
+	// 属性的 Variant::Type（对象桥跳板据此识别原生存储类型的槽布局）。
+	Variant::Type type = Variant::NIL;
 	bool read_only = false;
 };
 

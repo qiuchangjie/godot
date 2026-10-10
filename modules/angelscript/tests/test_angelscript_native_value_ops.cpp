@@ -433,3 +433,29 @@ void as_native_vo_native_fast_path_active() {
 	CHECK(run_double("double main() { Vector2 a(1, 2); Vector2 b(3, 4); Vector2 c = a + b; return c.length(); }", &out));
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0); // opAdd 与 length 均命中原生 thunk
 }
+
+// 边界编组：原生存储类型在"原生槽 ↔ Variant"的每一个出入口都必须双向正确。
+// 这里用 PackedVector2Array 同时覆盖两类边界（同一编组单点 as_binding_decl.cpp）：
+//   - `push_back(Vector2)` 形参：引擎方法形参边界，原生 Vector2 槽 → Variant；
+//   - `arr[i]` 返回：引擎方法返回边界，Variant → 原生 Vector2 槽。
+// 断言取精确分量（而非仅归一化长度），否则编组失真仍可能因"任意非零向量归一到单位长度"而假绿。
+void as_native_vo_boundary_conversions() {
+	if (!ASNativeValueStorage::is_native_storage_type(Variant::VECTOR2)) {
+		return; // 未启用平台跳过：无原生存储边界。
+	}
+	double out = 0.0;
+	CHECK(run_double(R"(
+		double main() {
+			PackedVector2Array arr;
+			arr.push_back(Vector2(1, 2));   // 形参边界：native -> Variant
+			arr.push_back(Vector2(3, 4));
+			Vector2 a = arr[0];             // 返回边界：Variant -> native
+			Vector2 b = arr[1];
+			Vector2 s = a + b;              // (4, 6)
+			Vector2 n = s.normalized();
+			return 1000.0 * (a.x + b.y) + n.length(); // 1000*(1+4) + 1 = 5001
+		}
+	)", &out));
+	CHECK(nearly(out, 5001.0));
+}
+

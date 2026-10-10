@@ -34,6 +34,7 @@
 #include "as_script.h"
 #include "as_script_language.h"
 #include "binding/as_binding_decl.h"
+#include "binding/as_binding_native_storage.h"
 #include "binding/as_binding_object.h"
 
 #include "core/object/class_db.h"
@@ -245,12 +246,16 @@ bool ASScriptInstance::set(const StringName &p_name, const Variant &p_value) {
 		if (ti == nullptr) {
 			return false;
 		}
-		// 绑定层把全部内建值类型（含 String/Vector2/Array…）按 sizeof(Variant) 注册为
-		// asOBJ_VALUE，槽里就是一颗已构造好的 Variant，直接赋值即可（operator= 自会处理
-		// 旧值的析构与新值的拷贝）。小写内建 `string` 例外：它是 sizeof(void*) 的 intern
-		// 句柄，不是 Variant 存储，本轮不做往返。
+		// 绑定层的值类型槽分两类：原生存储类型（Vector2/3/2i/3i）槽里是原生 T
+		// （8/12 字节），其余（String/Array/Rect2…）槽里是 sizeof(Variant) 的 Variant。
+		// 小写内建 `string` 例外：它是 sizeof(void*) 的 intern 句柄，不是 Variant 存储，本轮不做往返。
 		if (String(ti->GetName()) == "string") {
 			return false;
+		}
+		const Variant::Type native_type = ASBindingDecl::as_name_to_variant_type(String(ti->GetName()));
+		if (ASNativeValueStorage::is_native_storage_type(native_type)) {
+			ASNativeValueStorage::variant_to_native(native_type, p_value, addr);
+			return true;
 		}
 		*(Variant *)addr = p_value;
 		return true;
@@ -315,6 +320,11 @@ bool ASScriptInstance::get(const StringName &p_name, Variant &r_ret) const {
 		// 小写内建 `string` 不是 Variant 存储，不做往返（见 set()）。
 		if (String(ti->GetName()) == "string") {
 			return false;
+		}
+		const Variant::Type native_type = ASBindingDecl::as_name_to_variant_type(String(ti->GetName()));
+		if (ASNativeValueStorage::is_native_storage_type(native_type)) {
+			r_ret = ASNativeValueStorage::native_to_variant(native_type, addr);
+			return true;
 		}
 		r_ret = *(const Variant *)addr;
 		return true;
@@ -384,7 +394,11 @@ Variant::Type ASScriptInstance::get_property_type(const StringName &p_name, bool
 		if (r_is_valid != nullptr) {
 			*r_is_valid = true;
 		}
-		// 内建值类型的槽就是一颗 Variant，类型信息直接取它的实际类型。
+		// 原生存储类型的槽是原生 T，静态类型即可直接给出；其余槽是一颗 Variant，取实际类型。
+		const Variant::Type native_type = ASBindingDecl::as_name_to_variant_type(String(ti->GetName()));
+		if (ASNativeValueStorage::is_native_storage_type(native_type)) {
+			return native_type;
+		}
 		return (*(const Variant *)addr).get_type();
 	}
 

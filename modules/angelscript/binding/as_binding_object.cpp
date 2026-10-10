@@ -59,6 +59,10 @@ struct ASObjectBinding {
 	const MethodBind *bind = nullptr;
 	Vector<ASBindingKind> param_kinds;
 	ASBindingKind return_kind = AS_KIND_VOID;
+	// 与 param_kinds 平行：实参/返回的 Variant::Type（标量为 NIL）。
+	// 原生存储类型（Vector2/3/2i/3i）的槽是原生 T，编组必须带类型走布局感知路径。
+	Vector<Variant::Type> param_types;
+	Variant::Type return_type = Variant::NIL;
 	// self 槽的语义：由所属类是否派生自 RefCounted 决定（spec §0 R3）。
 	ASBindingKind object_kind = AS_KIND_OBJECT_NONOWNING;
 };
@@ -205,6 +209,8 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		b->bind = m.bind;
 		b->param_kinds = m.param_kinds;
 		b->return_kind = m.return_kind;
+		b->param_types = m.param_types;
+		b->return_type = m.return_type;
 		b->object_kind = class_kind;
 		const CharString decl = m.as_decl.utf8();
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), decl.get_data(), asFUNCTION(generic_method_call), asCALL_GENERIC), b);
@@ -234,6 +240,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		gb->kind = ASObjectBinding::KIND_PROPERTY_GET;
 		gb->member = p.name;
 		gb->return_kind = p.kind;
+		gb->return_type = p.type;
 		gb->object_kind = class_kind;
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cgdecl.get_data(), asFUNCTION(generic_property_get), asCALL_GENERIC), gb);
 
@@ -247,6 +254,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		sb->kind = ASObjectBinding::KIND_PROPERTY_SET;
 		sb->member = p.name;
 		sb->param_kinds.push_back(p.kind);
+		sb->param_types.push_back(p.type);
 		sb->object_kind = class_kind;
 		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), csdecl.get_data(), asFUNCTION(generic_property_set), asCALL_GENERIC), sb);
 	}
@@ -350,7 +358,8 @@ void ASBindingObject::generic_method_call(asIScriptGeneric *p_gen) {
 	Vector<Variant> args;
 	args.resize(argc);
 	for (int i = 0; i < argc; i++) {
-		args.write[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i]);
+		const Variant::Type pt = i < b->param_types.size() ? b->param_types[i] : Variant::NIL;
+		args.write[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i], pt);
 	}
 	// MethodBind 要的是“Variant 指针数组”，不能把 Vector<Variant> 强转成指针数组。
 	Vector<const Variant *> argptrs;
@@ -369,7 +378,7 @@ void ASBindingObject::generic_method_call(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: %s() failed (%d)", b->member, (int)ce.error));
 		return;
 	}
-	as_binding_marshal_return(p_gen, b->return_kind, ret);
+	as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
 }
 
 void ASBindingObject::generic_property_get(asIScriptGeneric *p_gen) {
@@ -390,7 +399,7 @@ void ASBindingObject::generic_property_get(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: property '%s' is not readable", b->member));
 		return;
 	}
-	as_binding_marshal_return(p_gen, b->return_kind, v);
+	as_binding_marshal_return(p_gen, b->return_kind, v, b->return_type);
 }
 
 void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
@@ -405,7 +414,7 @@ void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: %s: object is null or has been freed", b->member));
 		return;
 	}
-	Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
+	Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0], b->param_types.is_empty() ? Variant::NIL : b->param_types[0]);
 	bool valid = false;
 	self->set(b->member, v, &valid);
 	if (!valid) {
