@@ -30,7 +30,28 @@
 
 #include "as_binding_native_value_ops.h"
 
+#include "core/math/vector2.h"
+#include "core/variant/variant_internal.h"
+
 #include <angelscript.h>
+#include <new>
+
+namespace {
+
+template <typename T>
+struct OpAdd {
+	static T apply(const T &p_a, const T &p_b) { return p_a + p_b; }
+};
+
+// 二元运算：返回新对象。返回值存储为 sizeof(Variant)，按平台“内存返回”约定，
+// ret 是 AS 传入的隐藏返回缓冲（spec §4.3 / §7.1）。
+template <typename T, typename Op>
+void thunk_binop(Variant *ret, const Variant *self, const Variant *other) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Variant(Op::apply((const T &)*self, (const T &)*other));
+}
+
+} // namespace
 
 namespace ASNativeValueOps {
 
@@ -39,11 +60,15 @@ static int g_native_thunk_calls = 0;
 
 // 空表：全部回退 generic。T3 起按「类型 + 运算符/方法名」逐条填入原生 thunk。
 bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::Type p_type, const String &p_op, const String &p_decl) {
-	(void)p_engine;
-	(void)p_type_name;
-	(void)p_type;
-	(void)p_op;
-	(void)p_decl;
+	if (p_type == Variant::VECTOR2 && p_op == "opAdd") {
+		void *fn = (void *)&thunk_binop<Vector2, OpAdd<Vector2>>;
+		if (p_engine->RegisterObjectMethod(p_type_name.utf8().get_data(), p_decl.utf8().get_data(),
+					asFUNCTION(fn), asCALL_CDECL_OBJFIRST) >= 0) {
+			g_native_registration_count++;
+			return true;
+		}
+		return false;
+	}
 	return false;
 }
 

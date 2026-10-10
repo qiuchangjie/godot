@@ -35,11 +35,16 @@
 // 用例注册头：不得 include 任何 AngelScript 头；实现见 test_angelscript_native_value_ops.cpp。
 
 void as_native_vo_scaffold_fallback_unchanged();
+void as_native_vo_vector2_opadd();
 
 #ifndef ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL
 
 TEST_CASE("[AngelScript] native value ops scaffold fallback") {
 	as_native_vo_scaffold_fallback_unchanged();
+}
+
+TEST_CASE("[AngelScript] native value ops vector2 opAdd") {
+	as_native_vo_vector2_opadd();
 }
 
 #endif // ANGELSCRIPT_NATIVE_VALUE_OPS_TESTS_IMPL

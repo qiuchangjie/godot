@@ -94,6 +94,14 @@ void as_native_vo_scaffold_fallback_unchanged() {
 		return;
 	}
 	CHECK(nearly(out, 10.0));
-	// 脚手架已初始化（无表项 ⇒ 计数为 0，但接口可调用）。
-	CHECK(ASNativeValueOps::native_registration_count() == 0);
+}
+
+void as_native_vo_vector2_opadd() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double("double main() { Vector2 a(1, 2); Vector2 b(3, 4); Vector2 c = a + b; return c.x * 10.0 + c.y; }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 46.0)); // (1+3)*10 + (2+4)
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0); // 证明走了原生 opAdd
 }
