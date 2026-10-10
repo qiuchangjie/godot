@@ -124,3 +124,13 @@ void as_native_vo_vector2_arith_assign() {
 	CHECK(nearly(out, 805.0)); // (8,5)
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
+
+void as_native_vo_vector3_arith_assign() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double("double main() { Vector3 a(1, 2, 3); Vector3 b(4, 5, 6); Vector3 c = a + b; Vector3 d = b - a; Vector3 e = a * b; Vector3 f; f = c; return f.x + d.y + e.z; }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 26.0)); // f.x=5 (a+b) + d.y=3 (b-a) + e.z=18 (a*b)
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}

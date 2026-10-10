@@ -31,6 +31,7 @@
 #include "as_binding_native_value_ops.h"
 
 #include "core/math/vector2.h"
+#include "core/math/vector3.h"
 #include "core/variant/variant_internal.h"
 
 #include <angelscript.h>
@@ -76,6 +77,27 @@ Variant *thunk_assign(Variant *self, const Variant *other) {
 	return self;
 }
 
+// 按运算符名取该类型的原生 thunk 函数指针；未覆盖的运算符返回 nullptr。
+template <typename T>
+void *thunk_for_op(const String &p_op) {
+	if (p_op == "opAdd") {
+		return (void *)&thunk_binop<T, OpAdd<T>>;
+	}
+	if (p_op == "opSub") {
+		return (void *)&thunk_binop<T, OpSub<T>>;
+	}
+	if (p_op == "opMul") {
+		return (void *)&thunk_binop<T, OpMul<T>>;
+	}
+	if (p_op == "opDiv") {
+		return (void *)&thunk_binop<T, OpDiv<T>>;
+	}
+	if (p_op == "opAssign") {
+		return (void *)&thunk_assign<T>;
+	}
+	return nullptr;
+}
+
 } // namespace
 
 namespace ASNativeValueOps {
@@ -85,21 +107,18 @@ static int g_native_thunk_calls = 0;
 
 // 命中即原生注册并返回 true（调用方跳过 generic 跳板）；未命中返回 false。
 bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::Type p_type, const String &p_op, const String &p_decl) {
-	if (p_type != Variant::VECTOR2) {
-		return false; // 其余类型暂走 generic 回退。
-	}
 	void *fn = nullptr;
-	if (p_op == "opAdd") {
-		fn = (void *)&thunk_binop<Vector2, OpAdd<Vector2>>;
-	} else if (p_op == "opSub") {
-		fn = (void *)&thunk_binop<Vector2, OpSub<Vector2>>;
-	} else if (p_op == "opMul") {
-		fn = (void *)&thunk_binop<Vector2, OpMul<Vector2>>;
-	} else if (p_op == "opDiv") {
-		fn = (void *)&thunk_binop<Vector2, OpDiv<Vector2>>;
-	} else if (p_op == "opAssign") {
-		fn = (void *)&thunk_assign<Vector2>;
-	} else {
+	switch (p_type) {
+		case Variant::VECTOR2:
+			fn = thunk_for_op<Vector2>(p_op);
+			break;
+		case Variant::VECTOR3:
+			fn = thunk_for_op<Vector3>(p_op);
+			break;
+		default:
+			return false; // 其余类型暂走 generic 回退。
+	}
+	if (!fn) {
 		return false;
 	}
 	if (p_engine->RegisterObjectMethod(p_type_name.utf8().get_data(), p_decl.utf8().get_data(), asFUNCTION(fn), asCALL_CDECL_OBJFIRST) >= 0) {
