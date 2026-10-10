@@ -34,6 +34,9 @@
 
 #include "core/error/error_macros.h"
 #include "core/math/vector2.h"
+#include "core/math/vector2i.h"
+#include "core/math/vector3.h"
+#include "core/math/vector3i.h"
 
 #include <angelscript.h>
 #include <new>
@@ -238,6 +241,63 @@ bool register_vector2_members(asIScriptEngine *p_engine) {
 	return true;
 }
 
+bool is_native_storage_type(Variant::Type p_type) {
+	return p_type == Variant::VECTOR2 || p_type == Variant::VECTOR3 ||
+			p_type == Variant::VECTOR2I || p_type == Variant::VECTOR3I;
+}
+
+bool register_skeleton(asIScriptEngine *p_engine, Variant::Type p_type) {
+	const char *name = nullptr;
+	int size = 0;
+	switch (p_type) {
+		case Variant::VECTOR2: name = "Vector2"; size = sizeof(Vector2); break;
+		case Variant::VECTOR3: name = "Vector3"; size = sizeof(Vector3); break;
+		case Variant::VECTOR2I: name = "Vector2i"; size = sizeof(Vector2i); break;
+		case Variant::VECTOR3I: name = "Vector3i"; size = sizeof(Vector3i); break;
+		default: return false;
+	}
+	if (p_engine->GetTypeInfoByName(name) != nullptr) {
+		return true; // 幂等
+	}
+	const asDWORD flags = asOBJ_VALUE | asOBJ_APP_CLASS | asOBJ_APP_CLASS_CONSTRUCTOR |
+			asOBJ_APP_CLASS_DESTRUCTOR | asOBJ_APP_CLASS_ASSIGNMENT | asOBJ_APP_CLASS_COPY_CONSTRUCTOR;
+	if (p_engine->RegisterObjectType(name, size, flags) < 0) {
+		ERR_PRINT(vformat("AngelScript: failed to register native value type '%s'.", name));
+		return false;
+	}
+	return true;
+}
+
+Variant native_to_variant(Variant::Type p_type, const void *p_slot) {
+	switch (p_type) {
+		case Variant::VECTOR2: return *(const Vector2 *)p_slot;
+		case Variant::VECTOR3: return *(const Vector3 *)p_slot;
+		case Variant::VECTOR2I: return *(const Vector2i *)p_slot;
+		case Variant::VECTOR3I: return *(const Vector3i *)p_slot;
+		default: return Variant();
+	}
+}
+
+void variant_to_native(Variant::Type p_type, const Variant &p_value, void *p_slot) {
+	switch (p_type) {
+		case Variant::VECTOR2: *(Vector2 *)p_slot = (Vector2)p_value; break;
+		case Variant::VECTOR3: *(Vector3 *)p_slot = (Vector3)p_value; break;
+		case Variant::VECTOR2I: *(Vector2i *)p_slot = (Vector2i)p_value; break;
+		case Variant::VECTOR3I: *(Vector3i *)p_slot = (Vector3i)p_value; break;
+		default: break;
+	}
+}
+
+bool write_native_return(asIScriptGeneric *p_gen, Variant::Type p_type, const Variant &p_value) {
+	switch (p_type) {
+		case Variant::VECTOR2: { Vector2 t = (Vector2)p_value; p_gen->SetReturnObject(&t); return true; }
+		case Variant::VECTOR3: { Vector3 t = (Vector3)p_value; p_gen->SetReturnObject(&t); return true; }
+		case Variant::VECTOR2I: { Vector2i t = (Vector2i)p_value; p_gen->SetReturnObject(&t); return true; }
+		case Variant::VECTOR3I: { Vector3i t = (Vector3i)p_value; p_gen->SetReturnObject(&t); return true; }
+		default: return false;
+	}
+}
+
 } // namespace ASNativeValueStorage
 
 #else // !AS_NATIVE_VALUE_OPS_ENABLED
@@ -251,6 +311,36 @@ bool register_vector2_skeleton(asIScriptEngine *p_engine) {
 
 bool register_vector2_members(asIScriptEngine *p_engine) {
 	(void)p_engine;
+	return false;
+}
+
+bool is_native_storage_type(Variant::Type p_type) {
+	(void)p_type;
+	return false;
+}
+
+bool register_skeleton(asIScriptEngine *p_engine, Variant::Type p_type) {
+	(void)p_engine;
+	(void)p_type;
+	return false;
+}
+
+Variant native_to_variant(Variant::Type p_type, const void *p_slot) {
+	(void)p_type;
+	(void)p_slot;
+	return Variant();
+}
+
+void variant_to_native(Variant::Type p_type, const Variant &p_value, void *p_slot) {
+	(void)p_type;
+	(void)p_value;
+	(void)p_slot;
+}
+
+bool write_native_return(asIScriptGeneric *p_gen, Variant::Type p_type, const Variant &p_value) {
+	(void)p_gen;
+	(void)p_type;
+	(void)p_value;
 	return false;
 }
 

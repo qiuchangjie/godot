@@ -73,8 +73,8 @@ public:
 
 // 通用跳板共用的编组辅助：值类型/对象/全局函数三处复用（Task 3/4）。
 // 从 asIScriptGeneric 的第 p_index 个实参按 kind 取出 Variant。
-Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind);
+Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind, Variant::Type p_stored_type = Variant::NIL);
 // 把 Variant 按 kind 写回 asIScriptGeneric 的返回位置。
-void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value);
+void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value, Variant::Type p_return_type = Variant::NIL);
 // 形参传递形式：bool/int64/double 与 `T@` 句柄按值；其余内建值类型按 const 引用。
 String as_binding_render_param(const String &p_as_name);

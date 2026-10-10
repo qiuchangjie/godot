@@ -30,7 +30,10 @@
 
 #pragma once
 
+#include "core/variant/variant.h"
+
 class asIScriptEngine;
+class asIScriptGeneric;
 
 // P3 阶段 0 spike（throwaway）：Vector2 原生存储注册。
 //
@@ -41,6 +44,16 @@ class asIScriptEngine;
 // 返回 true = 原生方式已处理，调用方必须跳过 generic 骨架/成员注册。
 // 返回 false = 未处理（平台门控关闭或注册失败），调用方继续 generic。
 namespace ASNativeValueStorage {
+
+// 门控 + 类型判定：仅 MSVC x64 且为 4 个向量类型时为真。
+bool is_native_storage_type(Variant::Type p_type);
+// 骨架阶段：以 sizeof(T) + 非 POD 子标志注册；命中→true（调用方跳过 Variant 骨架）。
+bool register_skeleton(asIScriptEngine *p_engine, Variant::Type p_type);
+// 原生槽 ↔ Variant。
+Variant native_to_variant(Variant::Type p_type, const void *p_slot);
+void variant_to_native(Variant::Type p_type, const Variant &p_value, void *p_slot);
+// 以原生 T 写入 generic 返回槽（AS 经原生拷贝构造复制）。
+bool write_native_return(asIScriptGeneric *p_gen, Variant::Type p_type, const Variant &p_value);
 
 bool register_vector2_skeleton(asIScriptEngine *p_engine);
 bool register_vector2_members(asIScriptEngine *p_engine);

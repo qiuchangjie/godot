@@ -30,6 +30,7 @@
 
 #include "as_binding_decl.h"
 
+#include "as_binding_native_storage.h"
 #include "as_binding_object.h"
 #include "core/object/class_db.h"
 
@@ -216,7 +217,7 @@ bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, Str
 	return true;
 }
 
-Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind) {
+Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind, Variant::Type p_stored_type) {
 	switch (p_kind) {
 		case AS_KIND_BOOL:
 			return Variant((bool)p_gen->GetArgByte(p_index));
@@ -225,8 +226,11 @@ Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKi
 		case AS_KIND_DOUBLE:
 			return Variant(p_gen->GetArgDouble(p_index));
 		case AS_KIND_VALUE: {
-			// const T &in：GetArgObject 返回对象地址，其中存的是本模块统一的 Variant 存储。
+			// 原生存储类型：槽里是原生 T；其余仍是本模块统一的 Variant 存储。
 			void *p = p_gen->GetArgObject(p_index);
+			if (ASNativeValueStorage::is_native_storage_type(p_stored_type)) {
+				return p ? ASNativeValueStorage::native_to_variant(p_stored_type, p) : Variant();
+			}
 			return p ? *(const Variant *)p : Variant();
 		}
 		case AS_KIND_OBJECT_OWNING:
@@ -238,7 +242,7 @@ Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKi
 	}
 }
 
-void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value) {
+void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value, Variant::Type p_return_type) {
 	switch (p_kind) {
 		case AS_KIND_BOOL:
 			*(bool *)p_gen->GetAddressOfReturnLocation() = (bool)p_value;
@@ -250,7 +254,11 @@ void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, co
 			*(double *)p_gen->GetAddressOfReturnLocation() = (double)p_value;
 			break;
 		case AS_KIND_VALUE:
-			// 值类型按值返回：交给 AS 用注册的拷贝构造写进返回槽。
+			// 原生存储类型：以原生 T 写回，AS 用原生拷贝构造复制；其余交给 AS 用注册的 Variant 拷贝构造。
+			if (ASNativeValueStorage::is_native_storage_type(p_return_type) &&
+					ASNativeValueStorage::write_native_return(p_gen, p_return_type, p_value)) {
+				break;
+			}
 			p_gen->SetReturnObject((void *)&p_value);
 			break;
 		case AS_KIND_OBJECT_OWNING:

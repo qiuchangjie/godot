@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "../as_engine.h"
+#include "../binding/as_binding_native_storage.h"
 #include "../binding/as_binding_native_value_ops.h"
 #include "../binding/as_binding_value_types.h"
 
@@ -389,4 +390,18 @@ void as_native_vo_integer_methods_all() {
 	e += p.distance_squared_to(q);
 	CHECK(nearly(out, e));
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
+
+void as_native_vo_storage_slot_helpers() {
+	// 仅验证门控与 4 类型判定；未启用平台应为 false。
+	if (!ASNativeValueStorage::is_native_storage_type(Variant::VECTOR2)) {
+		CHECK_FALSE(ASNativeValueStorage::is_native_storage_type(Variant::VECTOR2));
+		return; // 未启用平台：短路
+	}
+	Vector2 v(1.5, -2.5);
+	Variant back = ASNativeValueStorage::native_to_variant(Variant::VECTOR2, &v);
+	CHECK_EQ((Vector2)back, v);
+	Vector2 slot;
+	ASNativeValueStorage::variant_to_native(Variant::VECTOR2, Variant(Vector2(3, 4)), &slot);
+	CHECK_EQ(slot, Vector2(3, 4));
 }
