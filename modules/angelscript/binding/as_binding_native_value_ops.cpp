@@ -31,7 +31,9 @@
 #include "as_binding_native_value_ops.h"
 
 #include "core/math/vector2.h"
+#include "core/math/vector2i.h"
 #include "core/math/vector3.h"
+#include "core/math/vector3i.h"
 #include "core/variant/variant_internal.h"
 
 #include <angelscript.h>
@@ -114,6 +116,12 @@ bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::T
 			break;
 		case Variant::VECTOR3:
 			fn = thunk_for_op<Vector3>(p_op);
+			break;
+		case Variant::VECTOR2I:
+			fn = thunk_for_op<Vector2i>(p_op);
+			break;
+		case Variant::VECTOR3I:
+			fn = thunk_for_op<Vector3i>(p_op);
 			break;
 		default:
 			return false; // 其余类型暂走 generic 回退。

@@ -134,3 +134,25 @@ void as_native_vo_vector3_arith_assign() {
 	CHECK(nearly(out, 26.0)); // f.x=5 (a+b) + d.y=3 (b-a) + e.z=18 (a*b)
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
+
+void as_native_vo_integer_vectors() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double(
+				"double main() {"
+				"  Vector2i a(7, 8);"
+				"  Vector2i b(3, 2);"
+				"  Vector2i d = a / b;"
+				"  Vector3i p(2, 3, 4);"
+				"  Vector3i q(5, 6, 7);"
+				"  Vector3i s = p + q;"
+				"  Vector3i r; r = s;"
+				"  int64 v = d.x + d.y + r.y;"
+				"  return double(v);"
+				"}",
+				&out)) {
+		return;
+	}
+	CHECK(nearly(out, 2.0 + 4.0 + 9.0)); // 整数除法 (7/3,8/2)=(2,4) + s.y=9
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
