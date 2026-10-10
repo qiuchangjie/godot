@@ -110,6 +110,27 @@ void *thunk_for_op(const String &p_op) {
 	return nullptr;
 }
 
+// 无参标量方法：直接返回原生标量（见 spec §5）。
+template <typename T, typename R, auto M>
+R thunk_method_scalar(const Variant *self) {
+	ASNativeValueOps::note_thunk_call();
+	return (R)(((const T &)*self).*M)();
+}
+
+// 无参对象方法：返回新值类型对象，走内存返回（见 spec §5）。
+template <typename T, typename R, auto M>
+void thunk_method_obj(Variant *ret, const Variant *self) {
+	ASNativeValueOps::note_thunk_call();
+	new (ret) Variant((R)(((const T &)*self).*M)());
+}
+
+// 单参标量方法：形参为同类型值对象（按 const 引用传入，见 spec §5）。
+template <typename T, typename R, auto M>
+R thunk_method1_scalar(const Variant *self, const Variant *arg) {
+	ASNativeValueOps::note_thunk_call();
+	return (R)(((const T &)*self).*M)((const T &)*arg);
+}
+
 } // namespace
 
 namespace ASNativeValueOps {
@@ -146,13 +167,90 @@ bool try_add_op(asIScriptEngine *p_engine, const String &p_type_name, Variant::T
 	return false;
 }
 
-bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Variant::Type p_type, const StringName &p_method, const String &p_decl) {
-	(void)p_engine;
-	(void)p_type_name;
-	(void)p_type;
-	(void)p_method;
-	(void)p_decl;
+// 命中即原生注册并返回 true，否则返回 false（调用方继续 generic 注册）。
+static bool reg_method(asIScriptEngine *p_engine, const String &p_type_name, const String &p_decl, void *p_fn) {
+	if (p_engine->RegisterObjectMethod(p_type_name.utf8().get_data(), p_decl.utf8().get_data(), asFUNCTION(p_fn), asCALL_CDECL_OBJFIRST) >= 0) {
+		g_native_registration_count++;
+		return true;
+	}
 	return false;
+}
+
+bool try_add_method(asIScriptEngine *p_engine, const String &p_type_name, Variant::Type p_type, const StringName &p_method, const String &p_decl) {
+	const String m = String(p_method);
+	switch (p_type) {
+		case Variant::VECTOR2:
+			if (m == "length") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector2, double, &Vector2::length>);
+			}
+			if (m == "length_squared") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector2, double, &Vector2::length_squared>);
+			}
+			if (m == "normalized") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_obj<Vector2, Vector2, &Vector2::normalized>);
+			}
+			if (m == "dot") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::dot>);
+			}
+			if (m == "distance_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::distance_to>);
+			}
+			if (m == "distance_squared_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2, double, &Vector2::distance_squared_to>);
+			}
+			break;
+		case Variant::VECTOR3:
+			if (m == "length") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector3, double, &Vector3::length>);
+			}
+			if (m == "length_squared") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector3, double, &Vector3::length_squared>);
+			}
+			if (m == "normalized") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_obj<Vector3, Vector3, &Vector3::normalized>);
+			}
+			if (m == "dot") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector3, double, &Vector3::dot>);
+			}
+			if (m == "distance_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector3, double, &Vector3::distance_to>);
+			}
+			if (m == "distance_squared_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector3, double, &Vector3::distance_squared_to>);
+			}
+			break;
+		case Variant::VECTOR2I:
+			if (m == "length") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector2i, double, &Vector2i::length>);
+			}
+			if (m == "length_squared") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector2i, int64_t, &Vector2i::length_squared>);
+			}
+			if (m == "distance_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2i, double, &Vector2i::distance_to>);
+			}
+			if (m == "distance_squared_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector2i, int64_t, &Vector2i::distance_squared_to>);
+			}
+			break;
+		case Variant::VECTOR3I:
+			if (m == "length") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector3i, double, &Vector3i::length>);
+			}
+			if (m == "length_squared") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method_scalar<Vector3i, int64_t, &Vector3i::length_squared>);
+			}
+			if (m == "distance_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector3i, double, &Vector3i::distance_to>);
+			}
+			if (m == "distance_squared_to") {
+				return reg_method(p_engine, p_type_name, p_decl, (void *)&thunk_method1_scalar<Vector3i, int64_t, &Vector3i::distance_squared_to>);
+			}
+			break;
+		default:
+			break;
+	}
+	return false; // 未覆盖的方法走 generic 回退。
 }
 
 int native_registration_count() { return g_native_registration_count; }

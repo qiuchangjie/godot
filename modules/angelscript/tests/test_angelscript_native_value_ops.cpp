@@ -173,3 +173,22 @@ void as_native_vo_op_equals() {
 	CHECK(nearly(out, 1.0));
 	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
 }
+
+void as_native_vo_method_core() {
+	double out = 0.0;
+	ASNativeValueOps::reset_native_thunk_calls();
+	if (!run_double(
+				"double main() {"
+				"  Vector2 a(3, 4);"
+				"  Vector2 b(0, 0);"
+				"  double L = a.length();"
+				"  double D = a.distance_to(b);"
+				"  double dot = a.dot(b);"
+				"  return a.normalized().x + a.normalized().y + L + D + dot + b.normalized().x;"
+				"}",
+				&out)) {
+		return;
+	}
+	CHECK(out > 0.0);
+	CHECK(ASNativeValueOps::native_thunk_calls() > 0);
+}
