@@ -8,21 +8,38 @@ env_as = env_modules.Clone()
 
 env_as.Prepend(CPPPATH=["#modules/angelscript/thirdparty/angelscript/include"])
 
-# AngelScript 2.38.0 官方编译器要求（doc_compile_lib）：
-# - MSVC x64 无法用内联汇编，必须用 ml64 单独汇编 as_callfunc_x64_msvc_asm.asm
-#   （vcvars64.bat 会把 ml64.exe 放进 PATH）。
-# - GNUC 系编译器必须关闭严格别名优化。
 env_angelscript = env_as.Clone()
-if env.msvc:
-    if env["arch"] == "x86_64":
-        asm_obj = env.Command(
-            "thirdparty/angelscript/source/as_callfunc_x64_msvc_asm.obj",
-            "thirdparty/angelscript/source/as_callfunc_x64_msvc_asm.asm",
+
+# 依据平台/架构/编译器显式接线 AngelScript 的 callfunc 汇编实现。
+# vendored 的 as_callfunc_*.cpp 只覆盖部分架构；arm/riscv 等需要额外的 .S，
+# 而 x86_64 的 GCC/Clang 实现完整内联在 as_callfunc_x64_gcc.cpp。
+import sys
+
+sys.path.insert(0, env.Dir("#modules/angelscript").abspath)
+import asm_sources
+
+_selection = asm_sources.select_callfunc_sources(env["platform"], env["arch"], env.msvc)
+
+if _selection.max_portability:
+    # 未映射的架构：回退到 AngelScript 的纯可移植实现。
+    env_angelscript.Append(CPPDEFINES=["AS_MAX_PORTABILITY"])
+elif env.msvc:
+    # MSVC 的 x64 callfunc 是独立 .asm，需要 ml64 汇编成 .obj。
+    for _asm_name in _selection.asm_sources:
+        _asm_path = "thirdparty/angelscript/source/" + _asm_name
+        _asm_obj = env.Command(
+            _asm_path[:-4] + ".obj",
+            _asm_path,
             "ml64 /c /nologo /W3 /Zi /Fo$TARGET /Ta $SOURCE",
         )
-        env.modules_sources.append(asm_obj)
-else:
-    # 非 MSVC 平台同样需要汇编 as_callfunc_x64_gcc.S，本阶段只做桌面 MSVC，留待平台里程碑。
+        env.modules_sources.append(_asm_obj)
+elif _selection.asm_sources:
+    env_angelscript.add_source_files(
+        env.modules_sources,
+        ["thirdparty/angelscript/source/" + _asm_name for _asm_name in _selection.asm_sources],
+    )
+
+if not env.msvc:
     env_angelscript.Append(CCFLAGS=["-fno-strict-aliasing"])
 
 # 第三方代码不由我们维护，不参与引擎的告警策略。

@@ -44,6 +44,24 @@ AngelScript 脚本可经 `as_host_call(int method_id, const Array &in args) -> V
   `install()`。`install()` 会**拷贝整张表**，传入的 `ASHostCallbacks` 内存可随即失效；桥不管理
   `user_data`，宿主须保证其指向的对象在 `uninstall()` 之前一直有效。
 
+## 平台支持
+
+模块在所有平台均可构建；AngelScript 的 callfunc 汇编按平台/架构/编译器显式接线：
+
+| 目标 | 汇编实现 |
+| --- | --- |
+| x86_64 + MSVC | `ml64` 汇编 `as_callfunc_x64_msvc_asm.asm` |
+| x86_64 + GCC/Clang/MinGW | 无外部汇编（`as_callfunc_x64_gcc.cpp`）|
+| arm64 + Apple | `as_callfunc_arm64_xcode.S` |
+| arm64 + 非 Apple | `as_callfunc_arm64_gcc.S` |
+| arm32 + Apple | `as_callfunc_arm_xcode.S` |
+| arm32 + 非 Apple | `as_callfunc_arm_gcc.S` |
+| riscv64 | `as_callfunc_riscv64_gcc.S` |
+| 其它（x86_32/wasm32/ppc64/… 及 MSVC arm64）| 定义 `AS_MAX_PORTABILITY`，纯可移植执行 |
+
+平台→汇编的映射与自检见 `asm_sources.py` 与 `tests/asm_sources_test.py`。
+冒烟工程见 `tests/smoke_project/`（`smoke.as` + 入库的 `smoke_bc.asb`，`_ready` 打印 `910001`/`910002`）。
+
 ## 脚本约定
 
 - 扩展名：`.as`（源码）与 `.asb`（预编译字节码容器，M4）均可加载。`.asb` 由 `--compile-angelscript` 离线生成：容器携带基类名与所需的 ClassDB 类型符号表，加载前只对这些类型做增量注册（不退回全量注册）；字节码脚本没有 `source_code`，`reload()` 返回 `ERR_INVALID_DATA`，类名同样必须等于文件名，且 `.asb` 必须与生成它的引擎 ABI 一致（版本/签名校验与回退策略由业务层 manifest 负责，本模块不做校验）。
