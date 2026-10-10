@@ -1,0 +1,18 @@
+; Engine configuration file.
+; 三语言性能对比基准工程（一次性工具，不随仓库提交）。
+
+config_version=5
+
+[application]
+
+config/name="LangBench"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "C#")
+
+[dotnet]
+
+project/assembly_name="LangBench"
+
+[rendering]
+
+renderer/rendering_method="mobile"
