@@ -12,6 +12,23 @@ extends Node
 const REPS := 7
 const DISPATCH_ITERS := 200000
 
+# P2 容器 / 引擎 API 隔离探针：仅跑 AngelScript，输出 PROBE|... 行。
+const PROBE_ITERS := 200000
+const PROBE_WORKLOADS := [
+	"probe_loop",
+	"probe_array_push",
+	"probe_array_read",
+	"probe_array_write",
+	"probe_array_size",
+	"probe_packed_read",
+	"probe_packed_write",
+	"probe_dict_get",
+	"probe_dict_set",
+	"probe_engine_scalar",
+	"probe_engine_prop_get",
+	"probe_engine_prop_set",
+]
+
 # 工作负载 → 迭代次数。
 const WORKLOADS := {
 	"bench_arith": 20000000,
@@ -29,6 +46,10 @@ var _small := false
 
 func _ready() -> void:
 	_small = OS.get_environment("BENCH_SMALL") == "1"
+	if OS.get_environment("BENCH_PROBE") == "1":
+		_run_probe()
+		get_tree().quit()
+		return
 	_targets = {"as": $BenchAS, "cs": $BenchCS, "gd": $BenchGD}
 	var version: Dictionary = Engine.get_version_info()
 	print("BENCH|engine|%s|0|0|0|0|0" % version["string"])
@@ -71,3 +92,18 @@ func _run_dispatch(node: Node, lang: String) -> void:
 		times.append(Time.get_ticks_usec() - t0)
 	var st := _stats(times)
 	print("BENCH|bench_dispatch|%s|%d|%d|%d|%d|0" % [lang, iters, st[0], st[1], st[2]])
+
+# P2 隔离探针运行器：仅 AngelScript，输出每个绑定操作的边际成本。
+func _run_probe() -> void:
+	var as_node: Node = $BenchAS
+	as_node.call("probe_prepare", PROBE_ITERS)
+	for w in PROBE_WORKLOADS:
+		as_node.call(w, maxi(1, PROBE_ITERS / 100)) # 预热
+		var times: Array = []
+		var checksum: Variant = null
+		for r in REPS:
+			var t0 := Time.get_ticks_usec()
+			checksum = as_node.call(w, PROBE_ITERS)
+			times.append(Time.get_ticks_usec() - t0)
+		var st := _stats(times)
+		print("PROBE|%s|as|%d|%d|%d|%d|%s" % [w, PROBE_ITERS, st[0], st[1], st[2], str(checksum)])

@@ -10,6 +10,11 @@ class BenchItem {
 }
 
 class bench_as {
+	// P2 隔离探针用的预置容器（仅在 BENCH_PROBE=1 下使用）。
+	Array _probe_arr;
+	PackedInt64Array _probe_packed;
+	Dictionary _probe_dict;
+
 	int bench_noop() {
 		return 1;
 	}
@@ -106,5 +111,120 @@ class bench_as {
 			s = (s + int(selfn.get_child_count(false))) & 0x3FFFFFFF;
 		}
 		return s;
+	}
+
+	// ---------- P2：容器 / 引擎 API 路径隔离探针（仅 AS；不需跨语言校验和）----------
+	// 每个方法只测一种绑定操作的边际成本；预热与重复由驱动器统一负责。
+
+	void probe_prepare(int n) {
+		_probe_arr = Array();
+		_probe_arr.resize(n);
+		for (int i = 0; i < n; i++) {
+			_probe_arr[i] = i;
+		}
+		_probe_packed = PackedInt64Array();
+		_probe_packed.resize(n);
+		for (int i = 0; i < n; i++) {
+			_probe_packed[i] = i;
+		}
+		_probe_dict = Dictionary();
+		for (int i = 0; i < n; i++) {
+			_probe_dict[i] = i;
+		}
+	}
+
+	int probe_loop(int n) {
+		int s = 0;
+		for (int i = 0; i < n; i++) {
+			s = (s + i) & 0x3FFFFFFF;
+		}
+		return s;
+	}
+
+	int probe_array_push(int n) {
+		Array arr;
+		for (int i = 0; i < n; i++) {
+			arr.push_back(i);
+		}
+		return int(arr.size());
+	}
+
+	int probe_array_read(int n) {
+		int s = 0;
+		for (int i = 0; i < n; i++) {
+			s = (s + int(_probe_arr[i])) & 0x3FFFFFFF;
+		}
+		return s;
+	}
+
+	int probe_array_write(int n) {
+		for (int i = 0; i < n; i++) {
+			_probe_arr[i] = i;
+		}
+		return int(_probe_arr.size());
+	}
+
+	int probe_array_size(int n) {
+		int s = 0;
+		for (int i = 0; i < n; i++) {
+			s = (s + int(_probe_arr.size())) & 0x3FFFFFFF;
+		}
+		return s;
+	}
+
+	int probe_packed_read(int n) {
+		int s = 0;
+		for (int i = 0; i < n; i++) {
+			s = (s + int(_probe_packed[i])) & 0x3FFFFFFF;
+		}
+		return s;
+	}
+
+	int probe_packed_write(int n) {
+		for (int i = 0; i < n; i++) {
+			_probe_packed[i] = i;
+		}
+		return int(_probe_packed.size());
+	}
+
+	int probe_dict_get(int n) {
+		int s = 0;
+		for (int i = 0; i < n; i++) {
+			s = (s + int(_probe_dict[i])) & 0x3FFFFFFF;
+		}
+		return s;
+	}
+
+	int probe_dict_set(int n) {
+		for (int i = 0; i < n; i++) {
+			_probe_dict[i] = i;
+		}
+		return int(_probe_dict.size());
+	}
+
+	int probe_engine_scalar(int n) {
+		Node @selfn = Node();
+		int s = 0;
+		for (int i = 0; i < n; i++) {
+			s = (s + int(selfn.get_child_count(false))) & 0x3FFFFFFF;
+		}
+		return s;
+	}
+
+	int probe_engine_prop_get(int n) {
+		Node @selfn = Node();
+		int s = 0;
+		for (int i = 0; i < n; i++) {
+			s = (s + selfn.process_priority) & 0x3FFFFFFF;
+		}
+		return s;
+	}
+
+	int probe_engine_prop_set(int n) {
+		Node @selfn = Node();
+		for (int i = 0; i < n; i++) {
+			selfn.process_priority = i & 1023;
+		}
+		return selfn.process_priority;
 	}
 }
