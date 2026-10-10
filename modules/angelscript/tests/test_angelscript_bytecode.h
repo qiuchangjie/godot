@@ -1,0 +1,73 @@
+/**************************************************************************/
+/*  test_angelscript_bytecode.h                                           */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
+#include "tests/test_macros.h"
+
+// 用例注册头：不得 include 任何 AngelScript 头；实现见 test_angelscript_bytecode.cpp。
+
+void as_bytecode_container_roundtrip();
+void as_bytecode_container_rejects_bad_input();
+void as_bytecode_stream_read_stops_at_end();
+void as_bytecode_save_writes_container();
+void as_bytecode_load_matches_source_introspection();
+void as_bytecode_load_rejects_corrupted_payload();
+void resource_loader_loads_asb();
+void compile_script_produces_loadable_bytecode();
+
+#ifndef ANGELSCRIPT_BYTECODE_TESTS_IMPL
+
+TEST_CASE("[AngelScript][ByteCode] container roundtrip") {
+	as_bytecode_container_roundtrip();
+}
+TEST_CASE("[AngelScript][ByteCode] container rejects bad input") {
+	as_bytecode_container_rejects_bad_input();
+}
+TEST_CASE("[AngelScript][ByteCode] memory read stream stops at end") {
+	as_bytecode_stream_read_stops_at_end();
+}
+TEST_CASE("[AngelScript][ByteCode] save_bytecode writes a loadable container") {
+	as_bytecode_save_writes_container();
+}
+TEST_CASE("[AngelScript][ByteCode] load_bytecode matches source introspection") {
+	as_bytecode_load_matches_source_introspection();
+}
+TEST_CASE("[AngelScript][ByteCode] load_bytecode rejects corrupted payload") {
+	as_bytecode_load_rejects_corrupted_payload();
+}
+TEST_CASE("[AngelScript][ByteCode] resource loader loads .asb") {
+	resource_loader_loads_asb();
+}
+TEST_CASE("[AngelScript][ByteCode] compile helper produces loadable bytecode") {
+	compile_script_produces_loadable_bytecode();
+}
+
+#endif // ANGELSCRIPT_BYTECODE_TESTS_IMPL

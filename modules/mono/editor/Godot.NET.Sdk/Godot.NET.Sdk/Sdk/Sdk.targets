@@ -48,6 +48,21 @@
     <Error Text="The project or one of its dependencies references GodotSharp packages which is incompatible with the active Godot C# bindings. The active C# bindings is Godot .NET." Condition="$([System.String]::Copy('%(Reference.Identity)').Contains('GodotSharp.dll'))" />
   </Target>
 
+  <!--
+  Root the assemblies that must not be trimmed when publishing with NativeAOT.
+  Script types and members are discovered through reflection at runtime, so the
+  whole assembly has to be preserved. This applies to every platform, not only iOS.
+  -->
+  <ItemGroup Condition=" '$(PublishAot)' == 'true' and '$(EnableGodotDotNetPreview)' != 'true' and '$(DisableImplicitGodotSharpReferences)' != 'true' ">
+    <TrimmerRootAssembly Include="GodotSharp" />
+  </ItemGroup>
+  <ItemGroup Condition=" '$(PublishAot)' == 'true' and '$(EnableGodotDotNetPreview)' == 'true' ">
+    <TrimmerRootAssembly Include="Godot.Bindings" />
+  </ItemGroup>
+  <ItemGroup Condition=" '$(PublishAot)' == 'true' ">
+    <TrimmerRootAssembly Include="$(TargetName)" />
+  </ItemGroup>
+
   <!-- iOS-specific build targets -->
   <Import Project="$(MSBuildThisFileDirectory)\iOS.targets" Condition=" '$(GodotTargetPlatform)' == 'ios' " />
 
