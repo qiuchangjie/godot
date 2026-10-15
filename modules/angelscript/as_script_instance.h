@@ -31,10 +31,13 @@
 #pragma once
 
 #include "as_script.h"
+#include "as_engine.h"
 
 #include "core/object/script_instance.h"
+#include "core/templates/hash_map.h"
 
 #include <angelscript.h>
+#include <cstdint>
 
 // 脚本实例：持有 AS 侧对象句柄（object）与一个专用执行上下文（context）。
 // 引擎回调 _ready/_enter_tree/_exit_tree/_process/_physics_process 由 Node 的
@@ -50,9 +53,22 @@ class ASScriptInstance : public ScriptInstance {
 	bool _find_property(const StringName &p_name, int *r_index, int *r_type_id) const;
 	static int _expected_param_count(const StringName &p_method);
 
+	// 方法名 + 标量编组计划缓存。nullptr 方法表示信号/无此方法/签名不符。
+	// 实例在热更时销毁重建，缓存不跨代，因此无需失效钩子。
+	mutable HashMap<StringName, ASEngine::ASCallPlan> method_resolution_cache;
+	const ASEngine::ASCallPlan *_resolve_call_plan(const StringName &p_method) const;
+
+	static uint64_t method_resolution_count_value;
+	static uint64_t call_plan_analysis_count_value;
+
 public:
 	ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owner);
 	virtual ~ASScriptInstance() override;
+
+	// 诊断/测试：统计昂贵的方法名解析次数（即缓存 miss 次数）。
+	static uint64_t method_resolution_count();
+	static void reset_method_resolution_count();
+	static uint64_t call_plan_analysis_count();
 
 	// AS 侧对象为空表示构造失败（没有默认 factory，或构造函数执行异常）。
 	// ASScript::instance_create() 据此丢弃半成品实例，避免返回"哑实例"。
@@ -70,7 +86,7 @@ public:
 	virtual bool has_method(const StringName &p_method) const override;
 	virtual Variant callp(const StringName &p_method, const Variant **p_args, int p_argcount, Callable::CallError &r_error) override;
 	virtual void notification(int p_notification, bool p_reversed = false) override;
-	virtual Ref<Script> get_script() const override { return script; }
+	virtual Script *get_script() const override { return script.ptr(); }
 	virtual ScriptLanguage *get_language() override;
 };
 

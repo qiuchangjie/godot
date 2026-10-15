@@ -1,0 +1,214 @@
+/**************************************************************************/
+/*  test_angelscript_profiling.cpp                                        */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#include "../as_engine.h"
+#include "../as_script_language.h"
+
+#include <angelscript.h>
+
+#define ANGELSCRIPT_PROFILING_TESTS_IMPL
+#include "test_angelscript_profiling.h"
+
+#ifdef DEBUG_ENABLED
+
+// 采样表按签名归组，导出顺序不保证；统一用签名查找，避免依赖 HashMap 迭代顺序。
+static bool _find_profile(const ScriptLanguage::ProfilingInfo *p_arr, int p_count, const StringName &p_signature, ScriptLanguage::ProfilingInfo *r_out) {
+	for (int i = 0; i < p_count; i++) {
+		if (p_arr[i].signature == p_signature) {
+			if (r_out != nullptr) {
+				*r_out = p_arr[i];
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+void as_profiling_counts_and_stops() {
+	ASScriptLanguage *lang = ASScriptLanguage::get_singleton();
+	REQUIRE(lang != nullptr);
+	if (lang == nullptr) {
+		return;
+	}
+
+	// 默认不采样（Review Focus 1）。
+	CHECK(!lang->is_profiling());
+
+	lang->profiling_start();
+	CHECK(lang->is_profiling());
+
+	lang->profile_function("as_test::alpha", 10);
+	lang->profile_function("as_test::alpha", 25);
+
+	ScriptLanguage::ProfilingInfo info[8];
+	const int count = lang->profiling_get_accumulated_data(info, 8);
+	ScriptLanguage::ProfilingInfo found;
+	const bool has = _find_profile(info, count, "as_test::alpha", &found);
+	REQUIRE(has);
+	if (!has) {
+		return;
+	}
+	CHECK(found.call_count == 2);
+	CHECK(found.total_time == 35);
+	CHECK(found.self_time == 35);
+	CHECK(found.internal_time == 0);
+
+	// 停止后历史仍可读，且不再累加（Review Focus 3）。
+	lang->profiling_stop();
+	CHECK(!lang->is_profiling());
+	lang->profile_function("as_test::alpha", 100);
+
+	const int count_after = lang->profiling_get_accumulated_data(info, 8);
+	ScriptLanguage::ProfilingInfo found_after;
+	const bool has_after = _find_profile(info, count_after, "as_test::alpha", &found_after);
+	REQUIRE(has_after);
+	if (!has_after) {
+		return;
+	}
+	CHECK(found_after.call_count == 2);
+	CHECK(found_after.total_time == 35);
+
+	// 重新 start 必须清空历史，避免跨会话脏数据（Review Focus 2）。
+	lang->profiling_start();
+	const int count_reset = lang->profiling_get_accumulated_data(info, 8);
+	CHECK(count_reset == 0);
+	lang->profiling_stop();
+}
+
+void as_profiling_frame_snapshot() {
+	ASScriptLanguage *lang = ASScriptLanguage::get_singleton();
+	REQUIRE(lang != nullptr);
+	if (lang == nullptr) {
+		return;
+	}
+
+	lang->profiling_start();
+	lang->profile_function("as_test::frame", 5);
+	lang->profile_function("as_test::frame", 7);
+
+	// 未 frame() 前帧数据必须为空（Review Focus 4）。
+	ScriptLanguage::ProfilingInfo frame_info[8];
+	CHECK(lang->profiling_get_frame_data(frame_info, 8) == 0);
+
+	lang->frame();
+	const int frame_count = lang->profiling_get_frame_data(frame_info, 8);
+	ScriptLanguage::ProfilingInfo frame_found;
+	const bool frame_has = _find_profile(frame_info, frame_count, "as_test::frame", &frame_found);
+	REQUIRE(frame_has);
+	if (!frame_has) {
+		return;
+	}
+	CHECK(frame_found.call_count == 2);
+	CHECK(frame_found.total_time == 12);
+
+	// 本帧无调用，再 frame() 后帧数据归零，但累计数据保留。
+	lang->frame();
+	CHECK(lang->profiling_get_frame_data(frame_info, 8) == 0);
+
+	ScriptLanguage::ProfilingInfo acc_info[8];
+	const int acc_count = lang->profiling_get_accumulated_data(acc_info, 8);
+	ScriptLanguage::ProfilingInfo acc_found;
+	const bool acc_has = _find_profile(acc_info, acc_count, "as_test::frame", &acc_found);
+	REQUIRE(acc_has);
+	if (!acc_has) {
+		return;
+	}
+	CHECK(acc_found.call_count == 2);
+	CHECK(acc_found.total_time == 12);
+	lang->profiling_stop();
+}
+
+void as_profiling_records_real_execution() {
+	ASScriptLanguage *lang = ASScriptLanguage::get_singleton();
+	REQUIRE(lang != nullptr);
+	if (lang == nullptr) {
+		return;
+	}
+
+	ASEngine *as = ASEngine::get_singleton();
+	REQUIRE(as != nullptr);
+	if (as == nullptr) {
+		return;
+	}
+	REQUIRE(as->ensure_initialized());
+	if (!as->is_initialized()) {
+		return;
+	}
+
+	String err;
+	REQUIRE_MESSAGE(as->compile_module("as_profiling_test", "int main() { return 7; }", &err), err);
+	if (!err.is_empty()) {
+		return;
+	}
+	asIScriptModule *mod = as->get_engine()->GetModule("as_profiling_test");
+	REQUIRE(mod != nullptr);
+	if (mod == nullptr) {
+		return;
+	}
+	asIScriptFunction *func = mod->GetFunctionByDecl("int main()");
+	REQUIRE(func != nullptr);
+	if (func == nullptr) {
+		return;
+	}
+
+	lang->profiling_start();
+	int result = 0;
+	CHECK(ASEngine::execute(as->get_engine(), func, &result) == OK);
+	lang->profiling_stop();
+	CHECK(result == 7);
+
+	ScriptLanguage::ProfilingInfo info[8];
+	const int count = lang->profiling_get_accumulated_data(info, 8);
+
+	// 编辑器 Profiler 面板按 "<path>::<line>::<func>" 三段解析签名
+	// （script_editor_debugger.cpp:872）；段数不对会让面板行名空白、源码跳转失效，
+	// 所以这里断言的是消费侧契约（可解析的结构），而不是实现自己拼出的字符串。
+	bool has = false;
+	Vector<String> parts;
+	ScriptLanguage::ProfilingInfo found;
+	for (int i = 0; i < count; i++) {
+		const Vector<String> candidate = String(info[i].signature).split("::");
+		if (candidate.size() == 3 && candidate[2] == "main") {
+			has = true;
+			parts = candidate;
+			found = info[i];
+			break;
+		}
+	}
+	REQUIRE(has);
+	if (!has) {
+		return;
+	}
+	CHECK(parts[0] == "as_profiling_test");
+	CHECK(parts[1].to_int() >= 1);
+	CHECK(found.call_count == 1);
+}
+
+#endif // DEBUG_ENABLED

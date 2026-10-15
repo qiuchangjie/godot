@@ -30,8 +30,10 @@
 
 #include "as_engine.h"
 
+#include "as_debugger.h"
 #include "as_host_bridge.h"
 #include "as_script_instance.h"
+#include "as_script_language.h"
 #include "binding/as_binding_decl.h"
 #include "binding/as_binding_error_mapper.h"
 #include "binding/as_binding_lazy.h"
@@ -62,6 +64,43 @@ void ASEngine::_message_callback(const asSMessageInfo *p_msg, void *p_param) {
 	}
 }
 
+void ASEngine::_diag_message_callback(const asSMessageInfo *p_msg, void *p_param) {
+	Vector<ASMessage> *msgs = static_cast<Vector<ASMessage> *>(p_param);
+	if (msgs == nullptr || p_msg == nullptr) {
+		return;
+	}
+	ASMessage m;
+	m.type = (int)p_msg->type;
+	m.row = (int)p_msg->row;
+	m.column = (int)p_msg->col;
+	m.section = String(p_msg->section ? p_msg->section : "");
+	m.message = String(p_msg->message ? p_msg->message : "");
+	msgs->push_back(m);
+}
+
+asIScriptContext *ASEngine::_request_context(asIScriptEngine *p_engine, void *p_param) {
+	if (p_engine == nullptr) {
+		return nullptr;
+	}
+	asIScriptContext *ctx = p_engine->CreateContext();
+	if (ctx != nullptr) {
+		ASDebugger::attach(ctx);
+		ASDebugger::enter_execution(ctx);
+	}
+	return ctx;
+}
+
+void ASEngine::_return_context(asIScriptEngine *p_engine, asIScriptContext *p_ctx, void *p_param) {
+	if (p_ctx == nullptr) {
+		return;
+	}
+	// Unprepare may execute script destructors through another requested context.
+	ASDebugger::leave_execution();
+	// 不做上下文池化：AS 内部借还很稀疏，缓存收益不抵「上下文被复用时残留状态」的风险。
+	p_ctx->Unprepare();
+	p_ctx->Release();
+}
+
 // 内建函数一律走泛型调用约定（asCALL_GENERIC）：设计 §3 约定绑定层统一使用泛型调用，
 // 内建 API 先行遵守，避免 M2 绑定层出现两套调用约定。
 static void _as_log_int(asIScriptGeneric *p_generic) {
@@ -73,7 +112,7 @@ static void _as_log_int(asIScriptGeneric *p_generic) {
 // 因此热更脚本的字符串输出走这里。Godot `String` 值类型以 Variant 为存储，
 // 直接复用 AS_KIND_VALUE 编组。
 static void _as_log_string(asIScriptGeneric *p_generic) {
-	print_line(String(as_binding_marshal_arg(p_generic, 0, AS_KIND_VALUE)));
+	print_line(String(as_binding_marshal_arg(p_generic, 0, AS_KIND_VALUE, Variant::STRING)));
 }
 
 // M3 信号链（设计 §5）的三个宿主内建。AS 脚本类不是 Node 子类，脚本内无法引用承载它的
@@ -97,8 +136,8 @@ static void _as_emit_signal(asIScriptGeneric *p_generic) {
 		}
 		return;
 	}
-	const Variant name_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
-	const Variant args_v = as_binding_marshal_arg(p_generic, 2, AS_KIND_VALUE);
+	const Variant name_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE, Variant::STRING);
+	const Variant args_v = as_binding_marshal_arg(p_generic, 2, AS_KIND_VALUE, Variant::ARRAY);
 	if (args_v.get_type() != Variant::ARRAY) {
 		asIScriptContext *ctx = asGetActiveContext();
 		if (ctx != nullptr) {
@@ -123,16 +162,16 @@ static void _as_emit_signal(asIScriptGeneric *p_generic) {
 // 生成指向宿主对象方法的 Callable，供 Object.connect 接收脚本信号。
 static void _as_callable(asIScriptGeneric *p_generic) {
 	Object *obj = as_handle_decode(p_generic->GetArgObject(0), AS_KIND_OBJECT_NONOWNING);
-	const Variant method_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
+	const Variant method_v = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE, Variant::STRING);
 	const Variant ret = Callable(obj, StringName(method_v));
-	as_binding_marshal_return(p_generic, AS_KIND_VALUE, ret);
+	as_binding_marshal_return(p_generic, AS_KIND_VALUE, ret, Variant::CALLABLE);
 }
 
 // M5 互操作 L2：AS -> 宿主的唯一入口。把 Array 展平为 Variant 数组后交给宿主桥，
 // 未安装或宿主报错时返回空 Variant 并记录诊断，绝不崩溃（spec §6.2）。
 static void _as_host_call(asIScriptGeneric *p_generic) {
 	const int method_id = (int)p_generic->GetArgDWord(0);
-	const Variant args_value = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE);
+	const Variant args_value = as_binding_marshal_arg(p_generic, 1, AS_KIND_VALUE, Variant::ARRAY);
 
 	// storage 必须活到 invoke 返回：宿主按 const Variant* 读取连续元素。
 	Vector<Variant> storage;
@@ -168,6 +207,7 @@ bool ASEngine::ensure_initialized() {
 	}
 
 	engine->SetMessageCallback(asFUNCTION(_message_callback), this, asCALL_CDECL);
+	engine->SetContextCallbacks(_request_context, _return_context, nullptr);
 
 	_register_builtins();
 
@@ -323,11 +363,68 @@ bool ASEngine::compile_module(const String &p_name, const String &p_source, Stri
 	return false;
 }
 
+bool ASEngine::compile_for_diagnostics(const String &p_name, const String &p_source, Vector<ASMessage> *r_messages, Vector<String> *r_functions) {
+	if (!ensure_initialized()) {
+		if (r_messages != nullptr) {
+			ASMessage m;
+			m.type = asMSGTYPE_ERROR;
+			m.message = "AngelScript engine failed to initialize.";
+			r_messages->push_back(m);
+		}
+		return false;
+	}
+
+	// 编辑器诊断只需要结构化消息，不触发惰性补绑定；用独立回调收集后恢复常驻回调。
+	Vector<ASMessage> msgs;
+	engine->SetMessageCallback(asFUNCTION(_diag_message_callback), &msgs, asCALL_CDECL);
+
+	const CharString name = p_name.utf8();
+	const CharString source = p_source.utf8();
+	bool ok = false;
+	asIScriptModule *mod = engine->GetModule(name.get_data(), asGM_ALWAYS_CREATE);
+	if (mod != nullptr) {
+		mod->AddScriptSection("editor", source.get_data());
+		ok = mod->Build() >= 0;
+		if (ok && r_functions != nullptr) {
+			const asUINT function_count = mod->GetFunctionCount();
+			for (asUINT i = 0; i < function_count; i++) {
+				asIScriptFunction *func = mod->GetFunctionByIndex(i);
+				// 只列出全局命名空间里的自由函数（供编辑器大纲），排除类方法。
+				// 注意：AS 对无命名空间的函数返回「非空指针的空串」而非 nullptr。
+				const char *func_ns = func != nullptr ? func->GetNamespace() : nullptr;
+				if (func == nullptr || func->GetObjectType() != nullptr || (func_ns != nullptr && func_ns[0] != '\0')) {
+					continue;
+				}
+				r_functions->push_back(String(func->GetName()));
+			}
+		}
+		engine->DiscardModule(name.get_data());
+	}
+
+	engine->SetMessageCallback(asFUNCTION(_message_callback), this, asCALL_CDECL);
+	if (r_messages != nullptr) {
+		r_messages->append_array(msgs);
+	}
+	return ok;
+}
+
+asIScriptContext *ASEngine::create_context() {
+	if (engine == nullptr) {
+		return nullptr;
+	}
+	asIScriptContext *ctx = engine->CreateContext();
+	if (ctx != nullptr) {
+		ASDebugger::attach(ctx);
+	}
+	return ctx;
+}
+
 Error ASEngine::execute(asIScriptEngine *p_engine, asIScriptFunction *p_func, int *r_ret) {
 	ERR_FAIL_NULL_V(p_engine, ERR_INVALID_PARAMETER);
 	ERR_FAIL_NULL_V(p_func, ERR_INVALID_PARAMETER);
 
-	asIScriptContext *ctx = p_engine->CreateContext();
+	// 经统一入口创建，保证调试回调一定装上。
+	asIScriptContext *ctx = get_singleton()->create_context();
 	ERR_FAIL_NULL_V(ctx, ERR_CANT_CREATE);
 
 	// 无参全局函数 = 以空对象、零参调用 call_function，复用其参数编组、返回值映射
@@ -402,10 +499,87 @@ int ASEngine::get_gc_count() const {
 	return gc_count;
 }
 
-Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret) {
+// 构造编辑器 Profiler 面板展示用的签名。面板按 "<path>::<line>::<func>" 三段解析
+// （script_editor_debugger.cpp:872-881），段数不对会落进空分支，导致行名空白、
+// 源码跳转失效，所以必须与 GDScript 一样补上声明行号这一段。
+// 全局/静态函数为 "<module>::<line>::<func>"，对象方法为 "<module>::<line>::<Class>.<func>"。
+static StringName _make_profile_signature(asIScriptFunction *p_func) {
+	const char *module_name = p_func->GetModuleName();
+	String signature = (module_name != nullptr && module_name[0] != '\0') ? String(module_name) : String("<module>");
+
+	// GetDeclaredAt 对非脚本函数返回 asNOT_SUPPORTED 并把 row 置 0，可安全直接取用。
+	int row = 0;
+	p_func->GetDeclaredAt(nullptr, &row, nullptr);
+	signature += "::" + itos(row);
+
+	const char *class_name = nullptr;
+	asITypeInfo *type_info = p_func->GetObjectType();
+	if (type_info != nullptr) {
+		class_name = type_info->GetName();
+	}
+
+	const char *func_name = p_func->GetName();
+	if (class_name != nullptr) {
+		signature += "::" + String(class_name) + "." + String(func_name != nullptr ? func_name : "<anonymous>");
+	} else {
+		signature += "::" + String(func_name != nullptr ? func_name : "<anonymous>");
+	}
+	return StringName(signature);
+}
+
+static ASEngine::ASScalarKind scalar_kind_for_type(int p_type_id) {
+	switch (p_type_id) {
+		case asTYPEID_VOID: return ASEngine::AS_VOID;
+		case asTYPEID_BOOL: return ASEngine::AS_BOOL;
+		case asTYPEID_INT32: case asTYPEID_UINT32: return ASEngine::AS_INT32;
+		case asTYPEID_INT64: case asTYPEID_UINT64: return ASEngine::AS_INT64;
+		case asTYPEID_FLOAT: return ASEngine::AS_FLOAT32;
+		case asTYPEID_DOUBLE: return ASEngine::AS_FLOAT64;
+		default: return ASEngine::AS_OTHER;
+	}
+}
+
+ASEngine::ASCallPlan ASEngine::make_call_plan(asIScriptFunction *p_func) {
+	ASCallPlan plan;
+	plan.function = p_func;
+	if (p_func == nullptr) {
+		return plan;
+	}
+	plan.argument_count = p_func->GetParamCount();
+	plan.fast_scalar_eligible = plan.argument_count <= 4;
+	for (asUINT i = 0; i < MIN(4u, plan.argument_count); i++) {
+		int type_id = asTYPEID_VOID;
+		asDWORD flags = 0;
+		p_func->GetParam(i, &type_id, &flags);
+		plan.arguments[i] = scalar_kind_for_type(type_id);
+		if (plan.arguments[i] == AS_OTHER || (flags & asTM_INOUTREF)) {
+			plan.fast_scalar_eligible = false;
+		}
+	}
+	asDWORD return_flags = 0;
+	plan.return_kind = scalar_kind_for_type(p_func->GetReturnTypeId(&return_flags));
+	if (plan.return_kind == AS_OTHER || (return_flags & asTM_INOUTREF)) {
+		plan.fast_scalar_eligible = false;
+	}
+	return plan;
+}
+
+Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_func, asIScriptObject *p_object, const Variant **p_args, int p_argc, Variant *r_ret, const ASCallPlan *p_plan) {
 	ERR_FAIL_NULL_V(p_context, ERR_INVALID_PARAMETER);
 	ERR_FAIL_NULL_V(p_func, ERR_INVALID_PARAMETER);
-	ERR_FAIL_COND_V(p_argc != (int)p_func->GetParamCount(), ERR_INVALID_PARAMETER);
+	// Snapshot before Execute: a reentrant call may grow the instance's plan map.
+	const ASCallPlan plan = p_plan != nullptr ? *p_plan : ASCallPlan();
+	const bool use_plan = plan.function == p_func && plan.fast_scalar_eligible;
+	const asUINT expected_argc = use_plan ? plan.argument_count : p_func->GetParamCount();
+	ERR_FAIL_COND_V(p_argc < 0 || (asUINT)p_argc != expected_argc, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_argc > 0 && p_args == nullptr, ERR_INVALID_PARAMETER);
+	if (!use_plan) {
+		asDWORD return_flags = 0;
+		p_func->GetReturnTypeId(&return_flags);
+		if (return_flags & asTM_INOUTREF) {
+			return ERR_INVALID_PARAMETER;
+		}
+	}
 
 	// M3：信号/回调会在脚本执行过程中再次进入脚本（宿主 Callable → Object::callp →
 	// 本函数），此时复用的 asIScriptContext 仍处于 asEXECUTION_ACTIVE，直接 Prepare
@@ -416,8 +590,24 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 	if (nested && p_context->PushState() < 0) {
 		return ERR_CANT_CREATE;
 	}
+	// 采样仅在性能分析器开启时进行：关闭时只多一次指针判空。
+	ASScriptLanguage *profile_lang = ASScriptLanguage::get_singleton();
+	uint64_t profile_start = 0;
+	if (profile_lang != nullptr && profile_lang->is_profiling()) {
+		profile_start = OS::get_singleton()->get_ticks_usec();
+	}
 	// 统一收尾：嵌套调用的清理交给 PopState()，非嵌套维持原行为（Unprepare）。
+	// 采样在此写回，因此所有已进入执行阶段的退出分支都会被采集
+	// （前置的 ERR_FAIL_* 与 PushState 失败发生在采样起点之前，脚本未执行，不采样）。
 	auto finish = [&](Error p_result) {
+		if (profile_start != 0) {
+			// 必须先取完耗时再构造签名：StringName 构造要拼 String 并加全局表锁，
+			// 开销达微秒级；而函数实参求值顺序未定义，交给编译器排就可能把采样器
+			// 自身开销计进被测函数（小函数会被放大数倍）。
+			// 只计脚本执行本身（Prepare + 参数编组 + Execute），清理不计入。
+			const uint64_t elapsed = OS::get_singleton()->get_ticks_usec() - profile_start;
+			profile_lang->profile_function(_make_profile_signature(p_func), elapsed);
+		}
 		if (nested) {
 			p_context->PopState();
 		} else {
@@ -434,76 +624,66 @@ Error ASEngine::call_function(asIScriptContext *p_context, asIScriptFunction *p_
 	}
 
 	for (int i = 0; i < p_argc; i++) {
-		const Variant &arg = *p_args[i];
-		// AS 的 SetArg* 会校验形参在栈上的宽度（SetArgQWord 只接受 8 字节形参，
-		// 对 32 位 int 会返回 asINVALID_TYPE 并把上下文置为错误态；SetArgFloat/
-		// SetArgDouble 分别是 4/8 字节），所以按形参类型 id 选择赋值函数，
-		// 而不是只看 Variant 类型，并且必须检查返回值。
-		int set_result = asSUCCESS;
-		switch (arg.get_type()) {
-			case Variant::BOOL:
-				set_result = p_context->SetArgByte(i, arg.operator bool() ? 1 : 0);
-				break;
-			case Variant::INT: {
-				int param_type_id = asTYPEID_VOID;
-				p_func->GetParam(i, &param_type_id);
-				if (param_type_id == asTYPEID_INT64 || param_type_id == asTYPEID_UINT64) {
-					set_result = p_context->SetArgQWord(i, (asQWORD)arg.operator int64_t());
-				} else {
-					set_result = p_context->SetArgDWord(i, (asDWORD)(int32_t)arg.operator int64_t());
-				}
-			} break;
-			case Variant::FLOAT: {
-				int param_type_id = asTYPEID_VOID;
-				p_func->GetParam(i, &param_type_id);
-				if (param_type_id == asTYPEID_FLOAT) {
-					set_result = p_context->SetArgFloat(i, (float)arg.operator double());
-				} else {
-					set_result = p_context->SetArgDouble(i, arg.operator double());
-				}
-			} break;
-			default:
-				// 对象/字符串等参数类型留待绑定层（M2）。
-				return finish(ERR_INVALID_PARAMETER);
-		}
-		if (set_result < 0) {
+		if (p_args[i] == nullptr) {
 			return finish(ERR_INVALID_PARAMETER);
 		}
+		const Variant &arg = *p_args[i];
+		ASScalarKind kind = AS_OTHER;
+		if (use_plan) {
+			kind = plan.arguments[i];
+		} else {
+			int type_id = asTYPEID_VOID;
+			asDWORD flags = 0;
+			p_func->GetParam(i, &type_id, &flags);
+			// The Variant bridge has no reference/out storage contract.
+			if (flags & asTM_INOUTREF) {
+				return finish(ERR_INVALID_PARAMETER);
+			}
+			kind = scalar_kind_for_type(type_id);
+		}
+		int set_result = asSUCCESS;
+		switch (kind) {
+			case AS_BOOL: if (arg.get_type()!=Variant::BOOL) return finish(ERR_INVALID_PARAMETER); set_result=p_context->SetArgByte(i,arg.operator bool()?1:0); break;
+			case AS_INT32: if (arg.get_type()!=Variant::INT) return finish(ERR_INVALID_PARAMETER); set_result=p_context->SetArgDWord(i,(asDWORD)(int32_t)arg.operator int64_t()); break;
+			case AS_INT64: if (arg.get_type()!=Variant::INT) return finish(ERR_INVALID_PARAMETER); set_result=p_context->SetArgQWord(i,(asQWORD)arg.operator int64_t()); break;
+			case AS_FLOAT32: if (arg.get_type()!=Variant::FLOAT) return finish(ERR_INVALID_PARAMETER); set_result=p_context->SetArgFloat(i,(float)arg.operator double()); break;
+			case AS_FLOAT64: if (arg.get_type()!=Variant::FLOAT) return finish(ERR_INVALID_PARAMETER); set_result=p_context->SetArgDouble(i,arg.operator double()); break;
+			default: return finish(ERR_INVALID_PARAMETER);
+		}
+		if (set_result < 0) return finish(ERR_INVALID_PARAMETER);
 	}
 
-	const int executed = p_context->Execute();
+	int executed;
+	{
+		ASDebugger::ExecutionScope debug_scope(p_context);
+		executed = p_context->Execute();
+	}
 	if (executed != asEXECUTION_FINISHED) {
-		// 静默吞掉异常会让脚本错误在宿主侧完全不可见（callp 只把它翻译成一个泛化错误码）。
-		const char *exception = p_context->GetExceptionString();
-		const char *section = nullptr;
-		const int line = p_context->GetExceptionLineNumber(nullptr, &section);
-		ERR_PRINT(vformat("AngelScript call '%s' failed: %s (%s:%d).",
-				p_func->GetName() != nullptr ? p_func->GetName() : "<anonymous>",
-				exception != nullptr ? exception : "execution did not finish",
-				section != nullptr ? section : "<script>",
-				line));
+		// 调试器已经以「富信息 + 调用栈」的形式上报过了，再打一条干巴巴的 ERR_PRINT
+		// 会让错误面板出现重复条目。非调试运行时 consume 恒为 false，行为与以前完全一致。
+		if (!ASDebugger::consume_exception_reported(p_context)) {
+			// 静默吞掉异常会让脚本错误在宿主侧完全不可见（callp 只把它翻译成一个泛化错误码）。
+			const char *exception = p_context->GetExceptionString();
+			const char *section = nullptr;
+			const int line = p_context->GetExceptionLineNumber(nullptr, &section);
+			ERR_PRINT(vformat("AngelScript call '%s' failed: %s (%s:%d).",
+					p_func->GetName() != nullptr ? p_func->GetName() : "<anonymous>",
+					exception != nullptr ? exception : "execution did not finish",
+					section != nullptr ? section : "<script>",
+					line));
+		}
 		return finish(FAILED);
 	}
 
 	if (r_ret != nullptr) {
-		switch (p_func->GetReturnTypeId()) {
-			case asTYPEID_VOID:
-				*r_ret = Variant();
-				break;
-			case asTYPEID_BOOL:
-				*r_ret = Variant(p_context->GetReturnByte() != 0);
-				break;
-			case asTYPEID_INT32:
-				// 32 位返回值必须走 GetReturnDWord：QWord 高位未定义，负数会被读成大正数。
-				*r_ret = Variant((int64_t)(int32_t)p_context->GetReturnDWord());
-				break;
-			case asTYPEID_INT64:
-				*r_ret = Variant((int64_t)p_context->GetReturnQWord());
-				break;
-			case asTYPEID_FLOAT:
-			case asTYPEID_DOUBLE:
-				*r_ret = Variant(p_context->GetReturnDouble());
-				break;
+		const int return_type = use_plan ? (int)plan.return_kind : (int)scalar_kind_for_type(p_func->GetReturnTypeId());
+		switch (return_type) {
+			case AS_VOID: *r_ret = Variant(); break;
+			case AS_BOOL: *r_ret = Variant(p_context->GetReturnByte() != 0); break;
+			case AS_INT32: *r_ret = Variant((int64_t)(int32_t)p_context->GetReturnDWord()); break;
+			case AS_INT64: *r_ret = Variant((int64_t)p_context->GetReturnQWord()); break;
+			case AS_FLOAT32: *r_ret = Variant((double)p_context->GetReturnFloat()); break;
+			case AS_FLOAT64: *r_ret = Variant(p_context->GetReturnDouble()); break;
 			default:
 				*r_ret = Variant();
 				break;

@@ -44,6 +44,68 @@
 
 static const char *AS_BASE_DIRECTIVE = "// godot_base:";
 
+// 扫描前 10 行里的 `// godot_base:` 指令；找到返回 true 并写出实参，否则返回 false。
+// 必须忽略块注释里的伪指令：源码注释是作者侧文档，`/* ... */` 里恰好有一行以指令开头
+// 时（旧实现按逐行字面量匹配会误采纳）不能左右基类。编辑器高亮词法器早已区分块注释，
+// 这里对齐同一语义：跟踪块注释状态，并跳过字符串/字符字面量与行注释，避免把 `"/*"`
+// 这类文本当成注释开始。
+static bool _scan_base_directive(const Vector<String> &p_lines, String *r_base_type) {
+	const int scan_lines = MIN(p_lines.size(), 10);
+	bool in_block_comment = false;
+	for (int i = 0; i < scan_lines; i++) {
+		const String &line = p_lines[i];
+		const bool line_starts_in_block = in_block_comment;
+		bool in_string = false;
+		char32_t string_quote = 0;
+		for (int j = 0; j < line.length(); j++) {
+			const char32_t c = line[j];
+			if (in_block_comment) {
+				if (c == U'*' && j + 1 < line.length() && line[j + 1] == U'/') {
+					in_block_comment = false;
+					j++;
+				}
+				continue;
+			}
+			if (in_string) {
+				if (c == U'\\') {
+					j++;
+					continue;
+				}
+				if (c == string_quote) {
+					in_string = false;
+				}
+				continue;
+			}
+			if (c == U'/' && j + 1 < line.length()) {
+				if (line[j + 1] == U'*') {
+					in_block_comment = true;
+					j++;
+					continue;
+				}
+				if (line[j + 1] == U'/') {
+					break; // 行注释：本行余下内容不再是代码（含嵌入式指令）。
+				}
+			}
+			if (c == U'"' || c == U'\'') {
+				in_string = true;
+				string_quote = c;
+			}
+		}
+		// 整行位于块注释内时，即便文本看起来像指令也不采纳。
+		if (line_starts_in_block) {
+			continue;
+		}
+		const String trimmed = line.strip_edges();
+		if (trimmed.begins_with(AS_BASE_DIRECTIVE)) {
+			if (r_base_type) {
+				*r_base_type = trimmed.substr(String(AS_BASE_DIRECTIVE).length()).strip_edges();
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
 // AngelScript 的模块名直接复用资源路径：热更时同一路径整体替换（spec §7），
 // 且路径天然唯一，不需要额外的模块名分配表。
 ASScript::ASScript() {
@@ -126,14 +188,10 @@ bool ASScript::compile_source(const String &p_source, const String &p_path, Stri
 	StringName base_type;
 	bool found_directive = false;
 	Vector<String> lines = src.split("\n");
-	const int scan_lines = MIN(lines.size(), 10);
-	for (int i = 0; i < scan_lines; i++) {
-		String line = lines[i].strip_edges();
-		if (line.begins_with(AS_BASE_DIRECTIVE)) {
-			base_type = StringName(line.substr(String(AS_BASE_DIRECTIVE).length()).strip_edges());
-			found_directive = true;
-			break;
-		}
+	String base_directive_arg;
+	if (_scan_base_directive(lines, &base_directive_arg)) {
+		base_type = StringName(base_directive_arg);
+		found_directive = true;
 	}
 
 	if (!found_directive) {
@@ -367,8 +425,93 @@ Error ASScript::reload(bool p_keep_state) {
 	if (!compile_source(source_code, get_path().is_empty() ? module_name : get_path(), &error)) {
 		return ERR_PARSE_ERROR;
 	}
+#ifdef TOOLS_ENABLED
+	// 重编译后属性集合可能变化：刷新占位实例，使 Inspector 立即显示新属性（等价 GDScript update_exports）。
+	update_placeholders();
+#endif
 	return OK;
 }
+
+#ifdef TOOLS_ENABLED
+void ASScript::_add_instance(ASScriptInstance *p_instance) {
+	instances.insert(p_instance);
+}
+
+void ASScript::_remove_instance(ASScriptInstance *p_instance) {
+	instances.erase(p_instance);
+}
+
+void ASScript::update_placeholders() {
+	if (placeholders.is_empty()) {
+		return;
+	}
+	List<PropertyInfo> props;
+	get_script_property_list(&props);
+	HashMap<StringName, Variant> values;
+	for (PlaceHolderScriptInstance *E : placeholders) {
+		E->update(props, values);
+	}
+}
+
+void ASScript::reload_with_instances(bool p_keep_state) {
+	// 保存-重编译-重挂：必须在重编译前摘除所有实例与占位实例。reload() 内部 clear() 会
+	// DiscardModule()，若仍有活跃的 asIScriptObject 指向该模块，重挂之前就已悬垂（UAF）。
+	HashMap<ObjectID, List<Pair<StringName, Variant>>> saved_states;
+
+	Vector<ASScriptInstance *> live_instances;
+	live_instances.reserve(instances.size());
+	for (ASScriptInstance *E : instances) {
+		live_instances.push_back(E);
+	}
+	for (ASScriptInstance *E : live_instances) {
+		Object *owner = E->get_owner();
+		if (owner == nullptr) {
+			continue;
+		}
+		E->get_property_state(saved_states[owner->get_instance_id()]);
+		// 摘除会析构实例并经 _remove_instance 回改集合，因此遍历的是上面的快照。
+		owner->set_script(Variant());
+	}
+
+	Vector<PlaceHolderScriptInstance *> live_placeholders;
+	live_placeholders.reserve(placeholders.size());
+	for (PlaceHolderScriptInstance *E : placeholders) {
+		live_placeholders.push_back(E);
+	}
+	for (PlaceHolderScriptInstance *E : live_placeholders) {
+		Object *owner = E->get_owner();
+		if (owner == nullptr || owner->get_script_instance() != E) {
+			continue;
+		}
+		E->get_property_state(saved_states[owner->get_instance_id()]);
+		owner->set_script(Variant());
+	}
+
+	reload(p_keep_state);
+
+	for (KeyValue<ObjectID, List<Pair<StringName, Variant>>> &E : saved_states) {
+		Object *obj = ObjectDB::get_instance(E.key);
+		if (obj == nullptr) {
+			continue;
+		}
+		obj->set_script(Ref<Script>(this));
+		ScriptInstance *si = obj->get_script_instance();
+		if (si == nullptr) {
+			continue;
+		}
+		if (si->is_placeholder()) {
+			PlaceHolderScriptInstance *ph = static_cast<PlaceHolderScriptInstance *>(si);
+			for (const Pair<StringName, Variant> &G : E.value) {
+				ph->property_set_fallback(G.first, G.second);
+			}
+		} else {
+			for (const Pair<StringName, Variant> &G : E.value) {
+				si->set(G.first, G.second);
+			}
+		}
+	}
+}
+#endif
 
 bool ASScript::has_method(const StringName &p_method) const {
 	// `signal_<name>` 是信号声明约定，不作为普通方法暴露（与 has_script_signal 分工）。
@@ -566,3 +709,27 @@ ScriptInstance *ASScript::instance_create(Object *p_this) {
 	}
 	return instance;
 }
+
+PlaceHolderScriptInstance *ASScript::placeholder_instance_create(Object *p_this) {
+#ifdef TOOLS_ENABLED
+	// 编辑器里脚本尚不可实例化时（例如刚由「新建脚本」创建、还未编译成功），
+	// Object::set_script() 会退而请求占位实例。这里若返回 nullptr，节点就拿不到任何
+	// ScriptInstance，表现为「挂不上脚本、Inspector 的 Script 栏为空」。
+	PlaceHolderScriptInstance *si = memnew(PlaceHolderScriptInstance(ASScriptLanguage::get_singleton(), Ref<Script>(this), p_this));
+	placeholders.insert(si);
+	// 脚本若已编译，属性列表可用；未编译时为空列表，update 也能安全接受。
+	List<PropertyInfo> props;
+	get_script_property_list(&props);
+	HashMap<StringName, Variant> values;
+	si->update(props, values);
+	return si;
+#else
+	return nullptr;
+#endif
+}
+
+#ifdef TOOLS_ENABLED
+void ASScript::_placeholder_erased(PlaceHolderScriptInstance *p_placeholder) {
+	placeholders.erase(p_placeholder);
+}
+#endif

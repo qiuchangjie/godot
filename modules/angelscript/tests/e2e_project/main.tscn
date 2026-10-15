@@ -1,18 +1,28 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene format=3 uid="uid://dkixf4h5lj5iu"]
 
-[ext_resource type="Script" path="res://main.as" id="1_main"]
-[ext_resource type="Script" path="res://binding_demo.as" id="2_binding"]
-[ext_resource type="Script" path="res://handle_demo.as" id="3_handle"]
-[ext_resource type="Script" path="res://signal_demo.as" id="4_signal"]
+[ext_resource type="Script" uid="uid://camhmxpbxjj" path="res://main.as" id="1_main"]
+[ext_resource type="Script" uid="uid://bi2waqxfmmmxy" path="res://binding_demo.as" id="2_binding"]
+[ext_resource type="Script" uid="uid://b6hdncdned24p" path="res://handle_demo.as" id="3_handle"]
+[ext_resource type="Script" uid="uid://de5w0fppesvdc" path="res://signal_demo.as" id="4_signal"]
+[ext_resource type="Script" uid="uid://0hvhbwarahrq" path="res://NewScript.cs" id="5_lquwl"]
+[ext_resource type="Script" uid="uid://d3e1cixdg5miq" path="res://HelloAS.as" id="6_7mycd"]
 
-[node name="Main" type="Node"]
+[node name="Main" type="Node" unique_id=927898200]
 script = ExtResource("1_main")
+ready_count = 42
 
-[node name="BindingDemo" type="Node" parent="."]
+[node name="BindingDemo" type="Node" parent="." unique_id=1896972011]
 script = ExtResource("2_binding")
 
-[node name="HandleDemo" type="Node" parent="."]
+[node name="HandleDemo" type="Node" parent="." unique_id=1408783613]
 script = ExtResource("3_handle")
 
-[node name="SignalDemo" type="Node" parent="."]
+[node name="SignalDemo" type="Node" parent="." unique_id=44871617]
 script = ExtResource("4_signal")
+
+[node name="CSNode" type="Node" parent="." unique_id=654314432]
+script = ExtResource("5_lquwl")
+
+[node name="ASNode" type="Node" parent="." unique_id=1453457776]
+script = ExtResource("6_7mycd")
+FCount = 0.0

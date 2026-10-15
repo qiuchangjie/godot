@@ -33,6 +33,7 @@
 #include "as_binding_decl.h"
 #include "as_binding_object.h"
 #include "as_binding_value_types.h"
+#include "as_typed_containers.h"
 
 #include "core/object/method_info.h"
 #include "core/os/memory.h"
@@ -47,7 +48,12 @@ namespace {
 struct ASUtilityBinding {
 	StringName name;
 	Vector<ASBindingKind> param_kinds;
+	// 形参/返回值的静态 Variant 类型：编组入口据此判定「原生 T 槽」还是「Variant 盒」。
+	// 上游 @GlobalScope 元数据可能退化为 NIL（如经 FUNCBINDVR* 注册的 lerp/clamp），
+	// 此时按 Variant 盒编组；一旦上游补全类型，原生化类型会在此被正确识别。
+	Vector<Variant::Type> param_types;
 	ASBindingKind return_kind = AS_KIND_VOID;
+	Variant::Type return_type = Variant::NIL;
 };
 
 void set_exception(const String &p_message) {
@@ -60,7 +66,7 @@ void set_exception(const String &p_message) {
 // @GlobalScope 工具函数的统一跳板：按 kind 编组实参后交给 Variant::call_utility_function，
 // 与对象方法跳板共用 as_binding_marshal_arg / as_binding_marshal_return。
 void generic_utility_call(asIScriptGeneric *p_gen) {
-	const ASUtilityBinding *binding = (const ASUtilityBinding *)p_gen->GetFunction()->GetUserData();
+	const ASUtilityBinding *binding = static_cast<const ASUtilityBinding *>(p_gen->GetAuxiliary());
 	if (binding == nullptr) {
 		set_exception("AngelScript: utility function binding metadata missing");
 		return;
@@ -70,7 +76,8 @@ void generic_utility_call(asIScriptGeneric *p_gen) {
 	Vector<Variant> args;
 	args.resize(argc);
 	for (int i = 0; i < argc; i++) {
-		args.write[i] = as_binding_marshal_arg(p_gen, i, binding->param_kinds[i]);
+		const Variant::Type stored_type = i < binding->param_types.size() ? binding->param_types[i] : Variant::NIL;
+		args.write[i] = as_binding_marshal_arg(p_gen, i, binding->param_kinds[i], stored_type);
 	}
 	Vector<const Variant *> argptrs;
 	argptrs.resize(argc);
@@ -89,7 +96,7 @@ void generic_utility_call(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: %s() failed (%d)", binding->name, (int)ce.error));
 		return;
 	}
-	as_binding_marshal_return(p_gen, binding->return_kind, ret);
+	as_binding_marshal_return(p_gen, binding->return_kind, ret, binding->return_type);
 }
 
 // 已注册 @GlobalScope 工具函数的引擎集合：RegisterGlobalFunction 重复同名声明会返回
@@ -114,13 +121,19 @@ void register_global_functions(asIScriptEngine *p_engine) {
 
 		ASUtilityBinding *binding = memnew(ASUtilityBinding);
 		binding->name = name;
-		binding->return_kind = (info.return_val.type == Variant::NIL) ? AS_KIND_VOID : ASBindingDecl::resolve(info.return_val).kind;
+		// 与 plan 同一判据：真 void（NIL 且无 NIL_IS_VARIANT）不编组；真 Variant 走 Variant 拷贝构造。
+		const PropertyInfo &rv = info.return_val;
+		binding->return_kind = (rv.type == Variant::NIL && !(rv.usage & PROPERTY_USAGE_NIL_IS_VARIANT))
+				? AS_KIND_VOID
+				: ASBindingDecl::resolve(rv).kind;
+		binding->return_type = rv.type;
 		for (const PropertyInfo &arg : info.arguments) {
 			binding->param_kinds.push_back(ASBindingDecl::resolve(arg).kind);
+			binding->param_types.push_back(arg.type);
 		}
 
 		const CharString decl_utf8 = decl.utf8();
-		const int id = p_engine->RegisterGlobalFunction(decl_utf8.get_data(), asFUNCTION(generic_utility_call), asCALL_GENERIC);
+		const int id = p_engine->RegisterGlobalFunction(decl_utf8.get_data(), asFUNCTION(generic_utility_call), asCALL_GENERIC, binding);
 		if (id < 0) {
 			memdelete(binding);
 			continue;
@@ -149,8 +162,11 @@ Error ASBindingRegistry::register_value_types_and_skeletons(const ASBindingPlan 
 		const Error e = ASBindingObject::register_skeleton(c, p_engine);
 		ERR_FAIL_COND_V_MSG(e != OK, e, vformat("AngelScript: skeleton registration failed for '%s'", c.name));
 	}
-	// 对象骨架齐备后，才能注册依赖 `Object` 类型名的 Variant 转换构造器。
-	return ASBindingValueTypes::register_object_conversions(p_engine);
+	// 对象骨架齐备后，才能注册依赖 `Object` 类型名的 Variant 转换构造器及
+	// 保存 ObjectID 的强类型容器方法签名。
+	const Error object_err = ASBindingValueTypes::register_object_conversions(p_engine);
+	ERR_FAIL_COND_V(object_err != OK, object_err);
+	return ASTypedContainers::register_all(p_engine);
 }
 
 Error ASBindingRegistry::register_types(const ASBindingPlan &p_plan, const Vector<StringName> &p_types, asIScriptEngine *p_engine) {

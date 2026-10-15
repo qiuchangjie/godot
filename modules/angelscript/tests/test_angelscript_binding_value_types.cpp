@@ -111,6 +111,45 @@ static bool run_double(const String &p_source, double *r_out) {
 	return true;
 }
 
+void as_binding_metadata_auxiliary() {
+	ASEngine *as = ASEngine::get_singleton();
+	if (!as->ensure_initialized()) {
+		REQUIRE(false);
+		return;
+	}
+	asIScriptEngine *engine = as->get_engine();
+	CHECK(ASBindingValueTypes::register_all(engine) == OK);
+	int methods = 0;
+	int behaviours = 0;
+	int globals = 0;
+	bool matched = true;
+	auto inspect = [&matched](asIScriptFunction *f, int &count) {
+		if (f != nullptr && f->GetUserData() != nullptr) {
+			count++;
+			matched = matched && f->GetAuxiliary() == f->GetUserData();
+		}
+	};
+	for (asUINT i = 0; i < engine->GetObjectTypeCount(); i++) {
+		asITypeInfo *type = engine->GetObjectTypeByIndex(i);
+		for (asUINT j = 0; j < type->GetMethodCount(); j++) {
+			inspect(type->GetMethodByIndex(j), methods);
+		}
+		for (asUINT j = 0; j < type->GetBehaviourCount(); j++) {
+			inspect(type->GetBehaviourByIndex(j, nullptr), behaviours);
+		}
+		for (asUINT j = 0; j < type->GetFactoryCount(); j++) {
+			inspect(type->GetFactoryByIndex(j), behaviours);
+		}
+	}
+	for (asUINT i = 0; i < engine->GetGlobalFunctionCount(); i++) {
+		inspect(engine->GetGlobalFunctionByIndex(i), globals);
+	}
+	CHECK(methods > 0);
+	CHECK(behaviours > 0);
+	CHECK(globals > 0);
+	CHECK(matched);
+}
+
 void as_binding_value_types_register_all() {
 	ASEngine *as = ASEngine::get_singleton();
 	REQUIRE(as->ensure_initialized());
@@ -124,6 +163,20 @@ void as_binding_value_types_register_all() {
 	}
 	// string 由字符串工厂注册（spec §3.8.2）。
 	CHECK(engine->GetTypeInfoByName("string") != nullptr);
+
+	// 原生调用约定前提：注册对象类型必须带 asOBJ_APP_CLASS（无子标志）。
+	{
+		asITypeInfo *vi = engine->GetTypeInfoByName("Vector2");
+		REQUIRE(vi != nullptr);
+		CHECK((vi->GetFlags() & asOBJ_APP_CLASS) != 0);
+		CHECK((vi->GetFlags() & (asOBJ_APP_PRIMITIVE | asOBJ_APP_FLOAT | asOBJ_APP_ARRAY)) == 0);
+	}
+	// 标志只应加在内建 34 个值类型上；Variant / string 仍走纯 generic，不应带 asOBJ_APP_CLASS。
+	{
+		asITypeInfo *si = engine->GetTypeInfoByName("string");
+		REQUIRE(si != nullptr);
+		CHECK((si->GetFlags() & asOBJ_APP_CLASS) == 0);
+	}
 }
 
 void as_binding_value_types_vector2_roundtrip() {
@@ -232,4 +285,20 @@ void as_binding_value_types_builtin_variant_return() {
 		return;
 	}
 	CHECK(nearly(out, 5.0));
+}
+
+void as_binding_value_types_static_builtin_methods() {
+	double out = 0.0;
+	// 值类型静态内建方法没有对象 this，作为 <类型>_<方法> 全局函数注册
+	// （与 ClassDB 静态方法注册为全局函数的约定一致）。
+	if (!run_double("double main() { Vector2 v = Vector2_from_angle(0.0); return v.x; }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 1.0));
+
+	// 整型参 + String 返回的静态方法（chr 无默认参数）。
+	if (!run_double("double main() { String s = String_chr(65); return double(s.length()); }", &out)) {
+		return;
+	}
+	CHECK(nearly(out, 1.0));
 }

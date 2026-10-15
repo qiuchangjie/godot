@@ -30,6 +30,7 @@
 
 #include "as_binding_decl.h"
 
+#include "as_binding_native_storage.h"
 #include "as_binding_object.h"
 #include "core/object/class_db.h"
 
@@ -105,6 +106,15 @@ ASBindingType ASBindingDecl::resolve(const PropertyInfo &p_info) {
 		out.kind = owning ? AS_KIND_OBJECT_OWNING : AS_KIND_OBJECT_NONOWNING;
 		return out;
 	}
+	if (p_info.type == Variant::NIL) {
+		// AS 无法表达「void 值」：NIL 作为形参/属性类型只可能是 Variant
+		// （上游约定参数不能是 void，故不需要 NIL_IS_VARIANT 标记）。
+		// 返回值是否为 void 由 render_signature 在调用 resolve 前判定。
+		out.valid = true;
+		out.as_name = "Variant";
+		out.kind = AS_KIND_VALUE;
+		return out;
+	}
 	String as = variant_type_to_as(p_info.type);
 	if (as.is_empty()) {
 		// 只写裸类型名，由调用方按场景拼 reason 前缀（return/param/property）。
@@ -142,6 +152,52 @@ static String render_param(const ASBindingType &t) {
 	return as_binding_render_param(t.as_name);
 }
 
+// 渲染返回类型与形参表（method_to_decl / static_method_to_decl 的公共部分）。
+static bool render_signature(const MethodInfo &p_info, const String &p_name, bool p_is_const, String *r_decl, String *r_reason) {
+	String ret;
+	if (p_info.return_val.type == Variant::NIL && !(p_info.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT)) {
+		// 真 void：NIL 且未标记 NIL_IS_VARIANT。
+		ret = "void";
+	} else {
+		// 真 Variant 返回（NIL + NIL_IS_VARIANT）与其它类型统一走 resolve，
+		// AS 侧声明为 Variant，由跳板用已注册的 Variant 拷贝构造写回。
+		ASBindingType rt = ASBindingDecl::resolve(p_info.return_val);
+		if (!rt.valid) {
+			if (r_reason) {
+				*r_reason = "unsupported-return-type: " + rt.unbound_reason;
+			}
+			return false;
+		}
+		ret = rt.as_name;
+	}
+
+	String args;
+	for (int i = 0; i < p_info.arguments.size(); i++) {
+		ASBindingType at = ASBindingDecl::resolve(p_info.arguments[i]);
+		if (!at.valid) {
+			if (r_reason) {
+				*r_reason = vformat("unsupported-param-type: %s (arg %d)", at.unbound_reason, i);
+			}
+			return false;
+		}
+		if (i > 0) {
+			args += ", ";
+		}
+		args += render_param(at);
+	}
+
+	String decl;
+	decl += ret + " " + p_name + "(" + args + ")";
+	if (p_is_const) {
+		decl += " const";
+	}
+
+	if (r_decl) {
+		*r_decl = decl;
+	}
+	return true;
+}
+
 bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, String *r_reason) {
 	if (r_decl) {
 		*r_decl = String();
@@ -159,7 +215,8 @@ bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, Str
 	}
 
 	// AS 2.38 的解析器不识别 `static` 关键字：把 "static ..." 交给 RegisterObjectMethod
-	// 会返回 asINVALID_DECLARATION 并永久污染引擎（探针验证）。M2 一律不绑定静态方法。
+	// 会返回 asINVALID_DECLARATION 并永久污染引擎（探针验证）。静态方法走
+	// static_method_to_decl 注册为全局函数（见该函数注释）。
 	if (p_info.flags & METHOD_FLAG_STATIC) {
 		if (r_reason) {
 			*r_reason = "static-method";
@@ -167,56 +224,36 @@ bool ASBindingDecl::method_to_decl(const MethodInfo &p_info, String *r_decl, Str
 		return false;
 	}
 
-	String ret;
-	if (p_info.return_val.type == Variant::NIL) {
-		// 真正返回 Variant 的方法（property_info 带 NIL_IS_VARIANT）在 M2 没有可编组的
-		// 返回类型：声明成 void 会静默丢弃返回值（半注册），必须整体归为 unbound。
-		if (p_info.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT) {
-			if (r_reason) {
-				*r_reason = "unsupported-return-type: Variant";
-			}
-			return false;
-		}
-		ret = "void";
-	} else {
-		ASBindingType rt = resolve(p_info.return_val);
-		if (!rt.valid) {
-			if (r_reason) {
-				*r_reason = "unsupported-return-type: " + rt.unbound_reason;
-			}
-			return false;
-		}
-		ret = rt.as_name;
-	}
-
-	String args;
-	for (int i = 0; i < p_info.arguments.size(); i++) {
-		ASBindingType at = resolve(p_info.arguments[i]);
-		if (!at.valid) {
-			if (r_reason) {
-				*r_reason = vformat("unsupported-param-type: %s (arg %d)", at.unbound_reason, i);
-			}
-			return false;
-		}
-		if (i > 0) {
-			args += ", ";
-		}
-		args += render_param(at);
-	}
-
-	String decl;
-	decl += ret + " " + p_info.name + "(" + args + ")";
-	if (p_info.flags & METHOD_FLAG_CONST) {
-		decl += " const";
-	}
-
-	if (r_decl) {
-		*r_decl = decl;
-	}
-	return true;
+	return render_signature(p_info, String(p_info.name), (p_info.flags & METHOD_FLAG_CONST) != 0, r_decl, r_reason);
 }
 
-Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind) {
+bool ASBindingDecl::static_method_to_decl(const MethodInfo &p_info, const StringName &p_scope, String *r_decl, String *r_reason) {
+	if (r_decl) {
+		*r_decl = String();
+	}
+	if (r_reason) {
+		*r_reason = String();
+	}
+
+	if (p_info.flags & METHOD_FLAG_VARARG) {
+		if (r_reason) {
+			*r_reason = "vararg";
+		}
+		return false;
+	}
+	if (!(p_info.flags & METHOD_FLAG_STATIC)) {
+		if (r_reason) {
+			*r_reason = "not-static-method";
+		}
+		return false;
+	}
+
+	// 全局函数没有 this：声明不带 const；名字沿用 `<作用域>_<成员名>` 约定。
+	const String name = String(p_scope) + "_" + String(p_info.name);
+	return render_signature(p_info, name, false, r_decl, r_reason);
+}
+
+Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind, Variant::Type p_stored_type) {
 	switch (p_kind) {
 		case AS_KIND_BOOL:
 			return Variant((bool)p_gen->GetArgByte(p_index));
@@ -225,8 +262,11 @@ Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKi
 		case AS_KIND_DOUBLE:
 			return Variant(p_gen->GetArgDouble(p_index));
 		case AS_KIND_VALUE: {
-			// const T &in：GetArgObject 返回对象地址，其中存的是本模块统一的 Variant 存储。
+			// 原生存储类型：槽里是原生 T；其余仍是本模块统一的 Variant 存储。
 			void *p = p_gen->GetArgObject(p_index);
+			if (ASNativeValueStorage::is_native_storage_type(p_stored_type)) {
+				return p ? ASNativeValueStorage::native_to_variant(p_stored_type, p) : Variant();
+			}
 			return p ? *(const Variant *)p : Variant();
 		}
 		case AS_KIND_OBJECT_OWNING:
@@ -238,7 +278,7 @@ Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKi
 	}
 }
 
-void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value) {
+void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value, Variant::Type p_return_type) {
 	switch (p_kind) {
 		case AS_KIND_BOOL:
 			*(bool *)p_gen->GetAddressOfReturnLocation() = (bool)p_value;
@@ -250,7 +290,11 @@ void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, co
 			*(double *)p_gen->GetAddressOfReturnLocation() = (double)p_value;
 			break;
 		case AS_KIND_VALUE:
-			// 值类型按值返回：交给 AS 用注册的拷贝构造写进返回槽。
+			// 原生存储类型：以原生 T 写回，AS 用原生拷贝构造复制；其余交给 AS 用注册的 Variant 拷贝构造。
+			if (ASNativeValueStorage::is_native_storage_type(p_return_type) &&
+					ASNativeValueStorage::write_native_return(p_gen, p_return_type, p_value)) {
+				break;
+			}
 			p_gen->SetReturnObject((void *)&p_value);
 			break;
 		case AS_KIND_OBJECT_OWNING:

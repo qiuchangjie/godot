@@ -75,6 +75,75 @@ void as_binding_plan_collects_unbound_vararg() {
 	CHECK(has_vararg); // Object::call 是 vararg，必须进未绑定清单。
 }
 
+void as_binding_plan_binds_static_methods() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope());
+
+	// 静态方法改为注册为全局函数后，不应再以 "static-method" 理由出现在未绑定清单。
+	// 未绑定清单很大，这里聚合成一个计数断言，避免制造海量断言噪声。
+	int static_reasons = 0;
+	for (const ASUnboundEntry &e : plan.get_unbound()) {
+		if (e.reason == "static-method") {
+			static_reasons++;
+		}
+	}
+	CHECK(static_reasons == 0);
+
+	// Node::print_orphan_nodes 是 ClassDB 静态方法：声明名称为全局函数 <类名>_<成员名>。
+	bool found = false;
+	for (const ASBindingClass &c : plan.get_classes()) {
+		if (c.name != StringName("Node")) {
+			continue;
+		}
+		for (const ASBindingMethod &m : c.methods) {
+			if (m.name == StringName("print_orphan_nodes")) {
+				found = true;
+				CHECK(m.is_static);
+				CHECK(m.as_decl == "void Node_print_orphan_nodes()");
+			}
+		}
+	}
+	CHECK(found);
+}
+
+void as_binding_plan_binds_variant_abi() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope());
+
+	// Variant 返回/形参不再因为 "unsupported-...: Variant" 落入未绑定清单。
+	// 清单很大，聚合成计数断言。
+	int variant_reasons = 0;
+	for (const ASUnboundEntry &e : plan.get_unbound()) {
+		if (e.reason.begins_with("unsupported-return-type: Variant") ||
+				e.reason.begins_with("unsupported-param-type: Variant")) {
+			variant_reasons++;
+		}
+	}
+	CHECK(variant_reasons == 0);
+
+	// Object::set_meta(const StringName&, Variant) 与 Object::get_meta(...) -> Variant。
+	bool found_set = false;
+	bool found_get = false;
+	for (const ASBindingClass &c : plan.get_classes()) {
+		if (c.name != StringName("Object")) {
+			continue;
+		}
+		for (const ASBindingMethod &m : c.methods) {
+			if (m.name == StringName("set_meta")) {
+				found_set = true;
+				CHECK(m.as_decl == "void set_meta(const StringName &in, const Variant &in)");
+			} else if (m.name == StringName("get_meta")) {
+				found_get = true;
+				CHECK(m.return_kind == AS_KIND_VALUE);
+				CHECK(m.return_type == Variant::NIL);
+				CHECK(m.as_decl.begins_with("Variant get_meta("));
+			}
+		}
+	}
+	CHECK(found_set);
+	CHECK(found_get);
+}
+
 void as_binding_plan_whitelist_keeps_ancestors() {
 	ASBindingScope scope;
 	scope.whitelist.push_back("Sprite2D"); // 期望连带保留 Node2D/CanvasItem/Node/Object。
@@ -102,4 +171,61 @@ void as_binding_plan_blacklist_wins() {
 	}
 	// Object 无条件保留，即使被拉黑。
 	CHECK_FALSE(plan.get_classes().is_empty());
+}
+
+#include "core/templates/hash_set.h"
+
+void as_binding_plan_accessor_name_taken() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope());
+
+	// 运行期先注册方法、再注册属性；属性访问器名若与同类（非静态）方法名重名，该属性
+	// 会静默让位（成员仍可经同名方法访问）。plan 必须用同一判定确定性地记录它，否则
+	// dump 会声明一个运行期并不存在的属性（评审 I1）。
+	HashSet<String> taken;
+	for (const ASUnboundEntry &e : plan.get_unbound()) {
+		if (e.reason == "accessor-name-taken") {
+			taken.insert(String(e.owner) + "." + e.member);
+		}
+	}
+	CHECK(taken.has("Image.data"));
+	CHECK(taken.has("Control.size"));
+
+	// 不变量：plan 里不应再有任何「属性访问器名 == 同类非静态方法名」的残留。
+	int collisions = 0;
+	for (const ASBindingClass &c : plan.get_classes()) {
+		HashSet<String> method_names;
+		for (const ASBindingMethod &m : c.methods) {
+			if (!m.is_static) {
+				method_names.insert(m.name);
+			}
+		}
+		for (const ASBindingProperty &p : c.properties) {
+			if (method_names.has("get_" + p.name) || (!p.read_only && method_names.has("set_" + p.name))) {
+				collisions++;
+			}
+		}
+	}
+	CHECK(collisions == 0);
+
+	// 让位的属性不再进入属性集；占名的方法仍在。
+	bool image_has_method = false;
+	bool image_has_data_property = false;
+	for (const ASBindingClass &c : plan.get_classes()) {
+		if (c.name != StringName("Image")) {
+			continue;
+		}
+		for (const ASBindingMethod &m : c.methods) {
+			if (m.name == "get_data") {
+				image_has_method = true;
+			}
+		}
+		for (const ASBindingProperty &p : c.properties) {
+			if (p.name == "data") {
+				image_has_data_property = true;
+			}
+		}
+	}
+	CHECK(image_has_method);
+	CHECK_FALSE(image_has_data_property);
 }

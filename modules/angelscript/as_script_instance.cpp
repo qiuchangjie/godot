@@ -31,9 +31,11 @@
 #include "as_script_instance.h"
 
 #include "as_engine.h"
+#include "as_debugger.h"
 #include "as_script.h"
 #include "as_script_language.h"
 #include "binding/as_binding_decl.h"
+#include "binding/as_binding_native_storage.h"
 #include "binding/as_binding_object.h"
 
 #include "core/object/class_db.h"
@@ -88,7 +90,7 @@ ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owne
 	asIScriptEngine *engine = ASEngine::get_singleton()->get_engine();
 	ERR_FAIL_NULL_MSG(engine, "AngelScript engine is not initialized.");
 
-	context = engine->CreateContext();
+	context = ASEngine::get_singleton()->create_context();
 	ERR_FAIL_NULL_MSG(context, "Failed to create an AngelScript context.");
 
 	// 默认构造（无参 factory）必须在此完成：之后引擎只按名字调方法、按索引读写属性。
@@ -112,7 +114,12 @@ ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owne
 	if (context->Prepare(factory) < 0) {
 		ERR_FAIL_MSG("Failed to prepare the AngelScript factory.");
 	}
-	if (context->Execute() != asEXECUTION_FINISHED) {
+	int factory_result;
+	{
+		ASDebugger::ExecutionScope debug_scope(context);
+		factory_result = context->Execute();
+	}
+	if (factory_result != asEXECUTION_FINISHED) {
 		context->Unprepare();
 		ERR_FAIL_MSG("AngelScript constructor execution failed.");
 	}
@@ -123,9 +130,19 @@ ASScriptInstance::ASScriptInstance(const Ref<ASScript> &p_script, Object *p_owne
 		object->AddRef();
 	}
 	context->Unprepare();
+
+#ifdef TOOLS_ENABLED
+	// 注册到脚本：编辑器热重载需枚举所有承载对象，先摘除再重编译，避免模块被丢弃后对象悬垂。
+	script->_add_instance(this);
+#endif
 }
 
 ASScriptInstance::~ASScriptInstance() {
+#ifdef TOOLS_ENABLED
+	if (script.is_valid()) {
+		script->_remove_instance(this);
+	}
+#endif
 	if (object != nullptr) {
 		object->Release();
 		object = nullptr;
@@ -178,6 +195,35 @@ int ASScriptInstance::_expected_param_count(const StringName &p_method) {
 		return 1;
 	}
 	return -1;
+}
+
+uint64_t ASScriptInstance::method_resolution_count_value = 0;
+uint64_t ASScriptInstance::call_plan_analysis_count_value = 0;
+
+uint64_t ASScriptInstance::method_resolution_count() { return method_resolution_count_value; }
+uint64_t ASScriptInstance::call_plan_analysis_count() { return call_plan_analysis_count_value; }
+void ASScriptInstance::reset_method_resolution_count() { method_resolution_count_value = 0; call_plan_analysis_count_value = 0; }
+
+const ASEngine::ASCallPlan *ASScriptInstance::_resolve_call_plan(const StringName &p_method) const {
+	HashMap<StringName, ASEngine::ASCallPlan>::ConstIterator cached = method_resolution_cache.find(p_method);
+	if (cached) return &cached->value;
+	method_resolution_count_value++;
+	asIScriptFunction *func = nullptr;
+	if (!_is_signal_declaration(p_method)) {
+		asITypeInfo *type = script->get_type_info();
+		if (type != nullptr) {
+			CharString name = String(p_method).utf8();
+			func = type->GetMethodByName(name.get_data(), true);
+			if (func != nullptr) {
+				const int expected = _expected_param_count(p_method);
+				if (expected >= 0 && (int)func->GetParamCount() != expected) func = nullptr;
+			}
+		}
+	}
+	ASEngine::ASCallPlan plan;
+	if (func != nullptr) { plan = ASEngine::make_call_plan(func); call_plan_analysis_count_value++; }
+	method_resolution_cache.insert(p_method, plan);
+	return method_resolution_cache.getptr(p_method);
 }
 
 bool ASScriptInstance::set(const StringName &p_name, const Variant &p_value) {
@@ -235,12 +281,16 @@ bool ASScriptInstance::set(const StringName &p_name, const Variant &p_value) {
 		if (ti == nullptr) {
 			return false;
 		}
-		// 绑定层把全部内建值类型（含 String/Vector2/Array…）按 sizeof(Variant) 注册为
-		// asOBJ_VALUE，槽里就是一颗已构造好的 Variant，直接赋值即可（operator= 自会处理
-		// 旧值的析构与新值的拷贝）。小写内建 `string` 例外：它是 sizeof(void*) 的 intern
-		// 句柄，不是 Variant 存储，本轮不做往返。
+		// 绑定层的值类型槽分两类：原生存储类型（Vector2/3/2i/3i）槽里是原生 T
+		// （8/12 字节），其余（String/Array/Rect2…）槽里是 sizeof(Variant) 的 Variant。
+		// 小写内建 `string` 例外：它是 sizeof(void*) 的 intern 句柄，不是 Variant 存储，本轮不做往返。
 		if (String(ti->GetName()) == "string") {
 			return false;
+		}
+		const Variant::Type native_type = ASBindingDecl::as_name_to_variant_type(String(ti->GetName()));
+		if (ASNativeValueStorage::is_native_storage_type(native_type)) {
+			ASNativeValueStorage::variant_to_native(native_type, p_value, addr);
+			return true;
 		}
 		*(Variant *)addr = p_value;
 		return true;
@@ -305,6 +355,11 @@ bool ASScriptInstance::get(const StringName &p_name, Variant &r_ret) const {
 		// 小写内建 `string` 不是 Variant 存储，不做往返（见 set()）。
 		if (String(ti->GetName()) == "string") {
 			return false;
+		}
+		const Variant::Type native_type = ASBindingDecl::as_name_to_variant_type(String(ti->GetName()));
+		if (ASNativeValueStorage::is_native_storage_type(native_type)) {
+			r_ret = ASNativeValueStorage::native_to_variant(native_type, addr);
+			return true;
 		}
 		r_ret = *(const Variant *)addr;
 		return true;
@@ -374,7 +429,11 @@ Variant::Type ASScriptInstance::get_property_type(const StringName &p_name, bool
 		if (r_is_valid != nullptr) {
 			*r_is_valid = true;
 		}
-		// 内建值类型的槽就是一颗 Variant，类型信息直接取它的实际类型。
+		// 原生存储类型的槽是原生 T，静态类型即可直接给出；其余槽是一颗 Variant，取实际类型。
+		const Variant::Type native_type = ASBindingDecl::as_name_to_variant_type(String(ti->GetName()));
+		if (ASNativeValueStorage::is_native_storage_type(native_type)) {
+			return native_type;
+		}
 		return (*(const Variant *)addr).get_type();
 	}
 
@@ -404,48 +463,18 @@ void ASScriptInstance::get_method_list(List<MethodInfo> *p_list) const {
 }
 
 bool ASScriptInstance::has_method(const StringName &p_method) const {
-	if (_is_signal_declaration(p_method)) {
-		// 信号声明不是方法（与 ASScript::has_method 一致）。
-		return false;
-	}
-	asITypeInfo *type = script->get_type_info();
-	if (type == nullptr) {
-		return false;
-	}
-	CharString name = String(p_method).utf8();
-	asIScriptFunction *func = type->GetMethodByName(name.get_data(), true);
-	if (func == nullptr) {
-		return false;
-	}
-	const int expected = _expected_param_count(p_method);
-	if (expected >= 0 && (int)func->GetParamCount() != expected) {
-		return false;
-	}
-	return true;
+	// 与 callp 共用同一份缓存解析：信号声明、无此方法、签名不符一律为 false。
+	return _resolve_call_plan(p_method)->function != nullptr;
 }
 
 Variant ASScriptInstance::callp(const StringName &p_method, const Variant **p_args, int p_argcount, Callable::CallError &r_error) {
 	r_error.error = Callable::CallError::CALL_OK;
 
-	if (_is_signal_declaration(p_method)) {
-		// 信号声明不是方法，不可经 call/callp 调用（与 has_method 的过滤一致）。
-		r_error.error = Callable::CallError::CALL_ERROR_INVALID_METHOD;
-		return Variant();
-	}
-
-	asITypeInfo *type = script->get_type_info();
-	if (type == nullptr) {
-		r_error.error = Callable::CallError::CALL_ERROR_INVALID_METHOD;
-		return Variant();
-	}
-	CharString name = String(p_method).utf8();
-	asIScriptFunction *func = type->GetMethodByName(name.get_data(), true);
+	// 每实例缓存方法解析结果：首次走慢路径，之后仅一次 StringName 哈希查找。
+	// 信号声明、无此方法、签名不符统一解析为 nullptr → 非法方法。
+	const ASEngine::ASCallPlan *plan = _resolve_call_plan(p_method);
+	asIScriptFunction *func = plan->function;
 	if (func == nullptr) {
-		r_error.error = Callable::CallError::CALL_ERROR_INVALID_METHOD;
-		return Variant();
-	}
-	const int expected = _expected_param_count(p_method);
-	if (expected >= 0 && (int)func->GetParamCount() != expected) {
 		r_error.error = Callable::CallError::CALL_ERROR_INVALID_METHOD;
 		return Variant();
 	}
@@ -455,7 +484,7 @@ Variant ASScriptInstance::callp(const StringName &p_method, const Variant **p_ar
 	ASInstanceScope instance_scope(this);
 
 	Variant ret;
-	const Error err = ASEngine::call_function(context, func, object, p_args, p_argcount, &ret);
+	const Error err = ASEngine::call_function(context, func, object, p_args, p_argcount, &ret, plan);
 	if (err == ERR_INVALID_PARAMETER) {
 		r_error.error = Callable::CallError::CALL_ERROR_INVALID_ARGUMENT;
 		return Variant();

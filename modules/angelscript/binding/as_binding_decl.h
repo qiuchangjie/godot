@@ -69,12 +69,16 @@ public:
 	static ASBindingType resolve(const PropertyInfo &p_info);
 	// MethodInfo -> AS 声明串（不含所属类名）。失败时返回 false 并写 r_reason。
 	static bool method_to_decl(const MethodInfo &p_info, String *r_decl, String *r_reason);
+	// 静态方法 -> AS **全局函数** 声明串。AS 2.38 解析器不识别 `static`，静态类方法必须按
+	// 全局函数注册；名字沿用 `<作用域>_<成员名>` 约定（与常量、枚举一致），无 self、无 const。
+	// 非静态方法返回 false 且 r_reason == "not-static-method"。
+	static bool static_method_to_decl(const MethodInfo &p_info, const StringName &p_scope, String *r_decl, String *r_reason);
 };
 
 // 通用跳板共用的编组辅助：值类型/对象/全局函数三处复用（Task 3/4）。
 // 从 asIScriptGeneric 的第 p_index 个实参按 kind 取出 Variant。
-Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind);
+Variant as_binding_marshal_arg(asIScriptGeneric *p_gen, int p_index, ASBindingKind p_kind, Variant::Type p_stored_type = Variant::NIL);
 // 把 Variant 按 kind 写回 asIScriptGeneric 的返回位置。
-void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value);
+void as_binding_marshal_return(asIScriptGeneric *p_gen, ASBindingKind p_kind, const Variant &p_value, Variant::Type p_return_type = Variant::NIL);
 // 形参传递形式：bool/int64/double 与 `T@` 句柄按值；其余内建值类型按 const 引用。
 String as_binding_render_param(const String &p_as_name);

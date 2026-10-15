@@ -165,12 +165,37 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		return false;
 	};
 
-	// 方法：no_inheritance=false（每个 AS 类型自包含），排除属性访问器以免重名。
+	// 上游把属性访问器重新并入了方法表（get_method_list 去掉了 p_exclude_from_properties），
+	// 这里按属性访问器名过滤，避免 get_*/set_* 作为方法注册、挤掉同名属性。
+	HashSet<StringName> accessor_names;
+	List<PropertyInfo> accessor_props;
+	ClassDB::get_property_list(p_class, &accessor_props, false);
+	for (const PropertyInfo &pi : accessor_props) {
+		const StringName getter = ClassDB::get_property_getter(p_class, pi.name);
+		const StringName setter = ClassDB::get_property_setter(p_class, pi.name);
+		if (getter != StringName()) {
+			accessor_names.insert(getter);
+		}
+		if (setter != StringName()) {
+			accessor_names.insert(setter);
+		}
+	}
+
+	// 方法：no_inheritance=false（每个 AS 类型自包含）。
 	List<MethodInfo> methods;
-	ClassDB::get_method_list(p_class, &methods, false, true);
+	ClassDB::get_method_list(p_class, &methods, false);
 	for (const MethodInfo &mi : methods) {
+		if (accessor_names.has(mi.name)) {
+			continue;
+		}
 		String decl, reason;
-		if (!ASBindingDecl::method_to_decl(mi, &decl, &reason)) {
+		const bool is_static = (mi.flags & METHOD_FLAG_STATIC) != 0;
+		// 静态方法本质是全局函数：走 static_method_to_decl（声明名 <类名>_<成员名>），
+		// 运行期由 register_class 以 RegisterGlobalFunction 注册，不做 RegisterObjectMethod。
+		const bool decl_ok = is_static
+				? ASBindingDecl::static_method_to_decl(mi, p_class, &decl, &reason)
+				: ASBindingDecl::method_to_decl(mi, &decl, &reason);
+		if (!decl_ok) {
 			ASUnboundEntry e;
 			e.owner = p_class;
 			e.member = String(mi.name);
@@ -194,6 +219,20 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 			continue;
 		}
 
+		// 虚方法（GDVIRTUAL / Object 核心虚方法）在 ClassDB 里只有 MethodInfo，没有可由 AS
+		// 直接调用的实现，必须归入 unbound。注意不能用 get_method()==nullptr 判断：同名实
+		// 方法存在时它会返回实方法的指针，从而把虚方法误当成可绑定项，注册出「同名同参、仅
+		// 返回类型不同」的重载（B4 解禁 Variant 形参/返回后撞出 asALREADY_REGISTERED 并永久
+		// 污染引擎）。必须按 METHOD_FLAG_VIRTUAL 判定。
+		if (mi.flags & METHOD_FLAG_VIRTUAL) {
+			ASUnboundEntry e;
+			e.owner = p_class;
+			e.member = String(mi.name);
+			e.reason = "virtual";
+			unbound.push_back(e);
+			continue;
+		}
+
 		ASBindingMethod m;
 		m.name = String(mi.name);
 		m.as_decl = decl;
@@ -209,14 +248,33 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 			continue;
 		}
 		m.is_static = (mi.flags & METHOD_FLAG_STATIC);
-		m.return_kind = (mi.return_val.type == Variant::NIL) ? AS_KIND_VOID : ASBindingDecl::resolve(mi.return_val).kind;
+		// 真 void（NIL 且无 NIL_IS_VARIANT）不编组返回值；其余（含真 Variant）按 resolve 的 kind。
+		const PropertyInfo &rv = mi.return_val;
+		m.return_kind = (rv.type == Variant::NIL && !(rv.usage & PROPERTY_USAGE_NIL_IS_VARIANT))
+				? AS_KIND_VOID
+				: ASBindingDecl::resolve(rv).kind;
+		m.return_type = rv.type;
 		for (const PropertyInfo &pi : mi.arguments) {
 			m.param_kinds.push_back(ASBindingDecl::resolve(pi).kind);
+			m.param_types.push_back(pi.type);
 		}
 		c.methods.push_back(m);
 	}
 
 	// 属性：含继承（每个 AS 类型自包含），跳过分类/分组标记。
+	//
+	// 运行期先注册方法、再注册属性；属性循环遇到「访问器名已是同类方法」就让位
+	// （GetMethodByName 命中即跳过），成员仍可通过同名方法访问。上面 accessor_names
+	// 只能过滤 ClassDB 明确报告了 getter/setter 的属性；Image.data 这类属性 ClassDB
+	// 不报告访问器名，其 get_data 会作为方法存活，运行期于是跳过该属性。这里用同一
+	// 判定在编译期确定性地让属性让位并记入 unbound，避免 dump 声明一个运行期并不存在
+	// 的属性（评审 I1）。
+	HashSet<String> method_names;
+	for (const ASBindingMethod &m : c.methods) {
+		if (!m.is_static) {
+			method_names.insert(m.name);
+		}
+	}
 	List<PropertyInfo> props;
 	ClassDB::get_property_list(p_class, &props, false);
 	for (const PropertyInfo &pi : props) {
@@ -231,6 +289,15 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 			e.owner = p_class;
 			e.member = String(pi.name);
 			e.reason = "unsupported-property-name: " + String(pi.name);
+			unbound.push_back(e);
+			continue;
+		}
+		const bool read_only = (pi.usage & PROPERTY_USAGE_READ_ONLY);
+		if (method_names.has("get_" + String(pi.name)) || (!read_only && method_names.has("set_" + String(pi.name)))) {
+			ASUnboundEntry e;
+			e.owner = p_class;
+			e.member = String(pi.name);
+			e.reason = "accessor-name-taken";
 			unbound.push_back(e);
 			continue;
 		}
@@ -258,6 +325,7 @@ void ASBindingPlan::_build_class(const StringName &p_class, const HashSet<String
 		bp.name = String(pi.name);
 		bp.as_type = t.as_name;
 		bp.kind = t.kind;
+		bp.type = pi.type;
 		bp.read_only = (pi.usage & PROPERTY_USAGE_READ_ONLY);
 		c.properties.push_back(bp);
 	}

@@ -120,3 +120,74 @@ void as_binding_dump_content_matches_runtime() {
 		CHECK(line.split("\t").size() == 3);
 	}
 }
+
+void as_binding_dump_static_methods_are_global() {
+	// 静态方法运行期以 RegisterGlobalFunction 注册（全局名 <类名>_<成员名>），dump 必须
+	// 同样放在类体外，不能在 class 体内声明成实例方法。
+	ASBindingScope scope;
+	scope.whitelist.push_back("Object");
+	scope.whitelist.push_back("Node");
+	ASBindingPlan plan;
+	plan.build(scope);
+
+	const String dir = "user://as_dump_static";
+	REQUIRE(ASBindingDumper::write(plan, dir) == OK);
+	const String decl = _read_all_text(dir.path_join("angelscript_api.d.as"));
+	REQUIRE(!decl.is_empty());
+	if (decl.is_empty()) {
+		return;
+	}
+
+	const int start = decl.find("class Node {");
+	REQUIRE(start >= 0);
+	const int open = decl.find("{", start);
+	REQUIRE(open >= 0);
+	const int close = decl.find("}", open);
+	REQUIRE(close > open);
+	if (start < 0 || open < 0 || close <= open) {
+		return;
+	}
+	const String block = decl.substr(open, close - open);
+	CHECK(block.find("Node_print_orphan_nodes") < 0); // 不得作为类方法声明。
+	CHECK(decl.contains("// ---------------- global functions ----------------"));
+	CHECK(decl.find("void Node_print_orphan_nodes();") >= 0); // 作为全局函数声明。
+}
+
+#include "core/templates/hash_map.h"
+
+void as_binding_dump_accessor_name_taken() {
+	ASBindingPlan plan;
+	plan.build(ASBindingScope());
+
+	const String dir = "user://as_dump_accessor";
+	REQUIRE(ASBindingDumper::write(plan, dir) == OK);
+	const String decl = _read_all_text(dir.path_join("angelscript_api.d.as"));
+
+	// Image.data 在运行期让位（get_data 是同类真实方法）：dump 只声明方法，不再声明属性。
+	const int start = decl.find("class Image {");
+	REQUIRE(start >= 0);
+	const int open = decl.find("{", start);
+	const int close = decl.find("}", open);
+	REQUIRE(open >= 0);
+	REQUIRE(close > open);
+	const String block = decl.substr(open, close - open);
+	CHECK(block.find("get_data() const;") >= 0);
+	CHECK(block.find("get_data() const property;") < 0);
+
+	// 反向保护：dump 声明的 getter 行数必须与 plan 的属性总数一致（一致性修复不得误删）。
+	int expected_getters = 0;
+	for (const ASBindingClass &c : plan.get_classes()) {
+		expected_getters += c.properties.size();
+	}
+	int actual_getters = 0;
+	int pos = 0;
+	while (true) {
+		const int idx = decl.find("() const property;", pos);
+		if (idx < 0) {
+			break;
+		}
+		actual_getters++;
+		pos = idx + 1;
+	}
+	CHECK(actual_getters == expected_getters);
+}

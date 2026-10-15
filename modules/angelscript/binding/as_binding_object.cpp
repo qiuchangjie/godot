@@ -31,6 +31,7 @@
 #include "as_binding_object.h"
 
 #include "as_binding_decl.h"
+#include "as_binding_native_value_ops.h"
 #include "core/object/class_db.h"
 #include "core/object/ref_counted.h"
 #include "core/os/memory.h"
@@ -38,6 +39,7 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "core/variant/callable.h"
+#include "scene/main/node.h"
 
 // 非拥有句柄的槽里放的是 64 位 ObjectID（validator + slot + ref 位），必须完整放进 sizeof(void*) 的槽。
 // 32 位平台的 uintptr_t 会截断高位，解码时可能命中另一个存活对象（对象错认），而不是安全降级为 null。
@@ -56,9 +58,13 @@ struct ASObjectBinding {
 	};
 	Kind kind = KIND_METHOD;
 	StringName member;
-	MethodBind *bind = nullptr;
+	const MethodBind *bind = nullptr;
 	Vector<ASBindingKind> param_kinds;
 	ASBindingKind return_kind = AS_KIND_VOID;
+	// 与 param_kinds 平行：实参/返回的 Variant::Type（标量为 NIL）。
+	// 原生存储类型（Vector2/3/2i/3i）的槽是原生 T，编组必须带类型走布局感知路径。
+	Vector<Variant::Type> param_types;
+	Variant::Type return_type = Variant::NIL;
 	// self 槽的语义：由所属类是否派生自 RefCounted 决定（spec §0 R3）。
 	ASBindingKind object_kind = AS_KIND_OBJECT_NONOWNING;
 };
@@ -102,13 +108,25 @@ void attach_binding(asIScriptEngine *p_engine, int p_id, void *p_userdata) {
 }
 
 ASObjectBinding *get_binding(asIScriptGeneric *p_gen, ASObjectBinding::Kind p_expected) {
-	asIScriptFunction *f = p_gen->GetFunction();
-	ASObjectBinding *b = f ? static_cast<ASObjectBinding *>(f->GetUserData()) : nullptr;
+	ASObjectBinding *b = static_cast<ASObjectBinding *>(p_gen->GetAuxiliary());
 	if (b == nullptr || b->kind != p_expected) {
 		set_exception("AngelScript: binding metadata missing");
 		return nullptr;
 	}
 	return b;
+}
+
+// 静态方法以全局函数注册，名字 `<类名>_<成员名>` 可能与工具函数等既有全局符号重名。
+// 任何 Register* 失败都会永久污染引擎，故注册前先扫描已存在的全局函数名。
+bool global_function_name_taken(asIScriptEngine *p_engine, const String &p_name) {
+	const asUINT count = p_engine->GetGlobalFunctionCount();
+	for (asUINT i = 0; i < count; i++) {
+		const asIScriptFunction *fn = p_engine->GetGlobalFunctionByIndex(i);
+		if (fn != nullptr && String(fn->GetName()) == p_name) {
+			return true;
+		}
+	}
+	return false;
 }
 
 } // namespace
@@ -138,6 +156,40 @@ void *as_handle_encode(Object *p_obj, ASBindingKind p_kind) {
 	return (void *)(uintptr_t)(uint64_t)p_obj->get_instance_id();
 }
 
+#if AS_NATIVE_VALUE_OPS_ENABLED
+namespace {
+
+// P1：引擎成员热点原生 thunk。全量不划算（~12.8 万成员，且原生约定无 per-call userdata），
+// 只对确认的热点按「(类, 方法) + self 槽语义」白名单注册专用 thunk；未命中一律回退 generic。
+// 新增热点 = 在此加一个 thunk + 一条白名单分支。
+int64_t hot_node_get_child_count(const void *p_self, bool p_include_internal) {
+	ASNativeValueOps::note_thunk_call();
+	// Node 非 RefCounted → self 槽是非拥有句柄（ObjectID），必须经 ObjectDB 解码。
+	Object *obj = as_handle_decode(const_cast<void *>(p_self), AS_KIND_OBJECT_NONOWNING);
+	if (obj == nullptr) {
+		set_exception("AngelScript: get_child_count: object is null or has been freed");
+		return 0;
+	}
+	return (int64_t)static_cast<Node *>(obj)->get_child_count(p_include_internal);
+}
+
+// 返回 true 表示已用原生 thunk 注册（调用方跳过 generic）。
+bool try_register_hot_method(asIScriptEngine *p_engine, const char *p_class_cstr, const StringName &p_class, ASBindingKind p_kind, const StringName &p_method, const String &p_decl) {
+	if (p_class == StringName("Node") && p_kind == AS_KIND_OBJECT_NONOWNING && p_method == StringName("get_child_count")) {
+		const CharString decl = p_decl.utf8();
+		const int r = p_engine->RegisterObjectMethod(p_class_cstr, decl.get_data(), asFUNCTION(hot_node_get_child_count), asCALL_CDECL_OBJFIRST);
+		if (r < 0) {
+			ERR_PRINT(vformat("AngelScript: failed to register native hot method Node::get_child_count (%d)", r));
+			return false;
+		}
+		return true;
+	}
+	return false;
+}
+
+} // namespace
+#endif // AS_NATIVE_VALUE_OPS_ENABLED
+
 Error ASBindingObject::register_skeleton(const ASBindingClass &p_class, asIScriptEngine *p_engine) {
 	ERR_FAIL_COND_V(p_engine == nullptr, ERR_INVALID_PARAMETER);
 
@@ -153,10 +205,11 @@ Error ASBindingObject::register_skeleton(const ASBindingClass &p_class, asIScrip
 		return ERR_CANT_CREATE;
 	}
 
-	// addref/release 对非 RefCounted（如 Node）是空操作：普通节点不该被脚本计数，
-	// 而且脚本里 free() 之后句柄还在，空操作跳板不会去碰已释放的内存。
-	// （把 RefCounted 赋给非 RefCounted 祖先类型的句柄，如 `Object @o = res;`，当前不会补引用，
-	// 这会漏掉一份引用；M2 记录为已知限制，留待 M3 用 ObjectID 做动态校验。）
+	// RefCounted 类：句柄槽里是裸指针，直接按 RefCounted 补/放引用。
+	// 非 RefCounted 类（Node 等）：addref/release 为空操作——脚本持有的 `Object@`/`Node@`
+	// 是弱引用（M3 语义），不保活对象、无跨边界引用环；句柄槽存 ObjectID，对象 free() 后
+	// 解引用经 as_handle_decode 反查为 null 并抛异常，绝不触碰已释放内存。
+	// 需要保活请声明具体 RefCounted 类型（如 `Resource@`）。
 	const bool refcounted = ClassDB::is_parent_class(p_class.name, "RefCounted");
 	asSFuncPtr addref_fn = refcounted ? asFUNCTION(generic_addref) : asFUNCTION(generic_addref_noop);
 	asSFuncPtr release_fn = refcounted ? asFUNCTION(generic_release) : asFUNCTION(generic_release_noop);
@@ -169,7 +222,7 @@ Error ASBindingObject::register_skeleton(const ASBindingClass &p_class, asIScrip
 		fb->object_kind = refcounted ? AS_KIND_OBJECT_OWNING : AS_KIND_OBJECT_NONOWNING;
 		const String decl = String(p_class.name) + "@ f()";
 		const CharString cdecl_utf8 = decl.utf8();
-		attach_binding(p_engine, p_engine->RegisterObjectBehaviour(cname.get_data(), asBEHAVE_FACTORY, cdecl_utf8.get_data(), asFUNCTION(generic_instantiate), asCALL_GENERIC), fb);
+		attach_binding(p_engine, p_engine->RegisterObjectBehaviour(cname.get_data(), asBEHAVE_FACTORY, cdecl_utf8.get_data(), asFUNCTION(generic_instantiate), asCALL_GENERIC, fb), fb);
 	}
 
 	return OK;
@@ -196,18 +249,51 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 			: AS_KIND_OBJECT_NONOWNING;
 
 	for (const ASBindingMethod &m : p_class.methods) {
-		if (m.bind == nullptr || m.is_static) {
+		if (m.bind == nullptr) {
 			continue;
 		}
+		if (m.is_static) {
+			// AS 2.38 无 `static` 关键字：静态方法注册为**全局函数**，命名沿用
+			// <类名>_<成员名> 约定（与常量、枚举一致）。名字冲突时跳过，
+			// 否则 Register* 失败会永久污染引擎。
+			const String gname = String(p_class.name) + "_" + m.name;
+			if (g_global_names[p_engine].has(gname) || global_function_name_taken(p_engine, gname)) {
+				continue;
+			}
+			ASObjectBinding *b = memnew(ASObjectBinding);
+			b->kind = ASObjectBinding::KIND_METHOD;
+			b->member = m.name;
+			b->bind = m.bind;
+			b->param_kinds = m.param_kinds;
+			b->return_kind = m.return_kind;
+			b->param_types = m.param_types;
+			b->return_type = m.return_type;
+			const CharString decl = m.as_decl.utf8();
+			const int id = p_engine->RegisterGlobalFunction(decl.get_data(), asFUNCTION(generic_static_method_call), asCALL_GENERIC, b);
+			if (id < 0) {
+				memdelete(b);
+				continue;
+			}
+			g_global_names[p_engine].insert(gname);
+			attach_binding(p_engine, id, b);
+			continue;
+		}
+#if AS_NATIVE_VALUE_OPS_ENABLED
+		if (try_register_hot_method(p_engine, cname.get_data(), p_class.name, class_kind, m.name, m.as_decl)) {
+			continue;
+		}
+#endif
 		ASObjectBinding *b = memnew(ASObjectBinding);
 		b->kind = ASObjectBinding::KIND_METHOD;
 		b->member = m.name;
 		b->bind = m.bind;
 		b->param_kinds = m.param_kinds;
 		b->return_kind = m.return_kind;
+		b->param_types = m.param_types;
+		b->return_type = m.return_type;
 		b->object_kind = class_kind;
 		const CharString decl = m.as_decl.utf8();
-		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), decl.get_data(), asFUNCTION(generic_method_call), asCALL_GENERIC), b);
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), decl.get_data(), asFUNCTION(generic_method_call), asCALL_GENERIC, b), b);
 	}
 
 	for (const ASBindingProperty &p : p_class.properties) {
@@ -234,8 +320,9 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		gb->kind = ASObjectBinding::KIND_PROPERTY_GET;
 		gb->member = p.name;
 		gb->return_kind = p.kind;
+		gb->return_type = p.type;
 		gb->object_kind = class_kind;
-		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cgdecl.get_data(), asFUNCTION(generic_property_get), asCALL_GENERIC), gb);
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cgdecl.get_data(), asFUNCTION(generic_property_get), asCALL_GENERIC, gb), gb);
 
 		if (p.read_only) {
 			continue;
@@ -247,8 +334,9 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 		sb->kind = ASObjectBinding::KIND_PROPERTY_SET;
 		sb->member = p.name;
 		sb->param_kinds.push_back(p.kind);
+		sb->param_types.push_back(p.type);
 		sb->object_kind = class_kind;
-		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), csdecl.get_data(), asFUNCTION(generic_property_set), asCALL_GENERIC), sb);
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), csdecl.get_data(), asFUNCTION(generic_property_set), asCALL_GENERIC, sb), sb);
 	}
 
 	for (const ASBindingConstant &c : p_class.constants) {
@@ -287,7 +375,7 @@ Error ASBindingObject::register_class(const ASBindingClass &p_class, asIScriptEn
 				: AS_KIND_OBJECT_NONOWNING;
 		const String decl = String(ancestor) + "@ opImplCast() const";
 		const CharString cdecl_utf8 = decl.utf8();
-		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cdecl_utf8.get_data(), asFUNCTION(generic_upcast), asCALL_GENERIC), ub);
+		attach_binding(p_engine, p_engine->RegisterObjectMethod(cname.get_data(), cdecl_utf8.get_data(), asFUNCTION(generic_upcast), asCALL_GENERIC, ub), ub);
 		ancestor = ClassDB::get_parent_class_nocheck(ancestor);
 	}
 
@@ -350,7 +438,8 @@ void ASBindingObject::generic_method_call(asIScriptGeneric *p_gen) {
 	Vector<Variant> args;
 	args.resize(argc);
 	for (int i = 0; i < argc; i++) {
-		args.write[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i]);
+		const Variant::Type pt = i < b->param_types.size() ? b->param_types[i] : Variant::NIL;
+		args.write[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i], pt);
 	}
 	// MethodBind 要的是“Variant 指针数组”，不能把 Vector<Variant> 强转成指针数组。
 	Vector<const Variant *> argptrs;
@@ -369,7 +458,40 @@ void ASBindingObject::generic_method_call(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: %s() failed (%d)", b->member, (int)ce.error));
 		return;
 	}
-	as_binding_marshal_return(p_gen, b->return_kind, ret);
+	as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
+}
+
+void ASBindingObject::generic_static_method_call(asIScriptGeneric *p_gen) {
+	ASObjectBinding *b = get_binding(p_gen, ASObjectBinding::KIND_METHOD);
+	if (b == nullptr) {
+		return;
+	}
+	// 静态方法没有 self：MethodBind 的静态实现忽略实例指针，传 nullptr 即可。
+
+	const int argc = b->param_kinds.size();
+	Vector<Variant> args;
+	args.resize(argc);
+	for (int i = 0; i < argc; i++) {
+		const Variant::Type pt = i < b->param_types.size() ? b->param_types[i] : Variant::NIL;
+		args.write[i] = as_binding_marshal_arg(p_gen, i, b->param_kinds[i], pt);
+	}
+	Vector<const Variant *> argptrs;
+	argptrs.resize(argc);
+	for (int i = 0; i < argc; i++) {
+		argptrs.write[i] = &args[i];
+	}
+
+	Callable::CallError ce;
+	const Variant **argv = nullptr;
+	if (argc > 0) {
+		argv = argptrs.ptrw();
+	}
+	Variant ret = b->bind->call(nullptr, argv, argc, ce);
+	if (ce.error != Callable::CallError::CALL_OK) {
+		set_exception(vformat("AngelScript: %s() failed (%d)", b->member, (int)ce.error));
+		return;
+	}
+	as_binding_marshal_return(p_gen, b->return_kind, ret, b->return_type);
 }
 
 void ASBindingObject::generic_property_get(asIScriptGeneric *p_gen) {
@@ -390,7 +512,7 @@ void ASBindingObject::generic_property_get(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: property '%s' is not readable", b->member));
 		return;
 	}
-	as_binding_marshal_return(p_gen, b->return_kind, v);
+	as_binding_marshal_return(p_gen, b->return_kind, v, b->return_type);
 }
 
 void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
@@ -405,7 +527,7 @@ void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
 		set_exception(vformat("AngelScript: %s: object is null or has been freed", b->member));
 		return;
 	}
-	Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0]);
+	Variant v = as_binding_marshal_arg(p_gen, 0, b->param_kinds[0], b->param_types.is_empty() ? Variant::NIL : b->param_types[0]);
 	bool valid = false;
 	self->set(b->member, v, &valid);
 	if (!valid) {
@@ -414,8 +536,7 @@ void ASBindingObject::generic_property_set(asIScriptGeneric *p_gen) {
 }
 
 void ASBindingObject::generic_instantiate(asIScriptGeneric *p_gen) {
-	asIScriptFunction *f = p_gen->GetFunction();
-	ASObjectFactoryBinding *fb = f ? static_cast<ASObjectFactoryBinding *>(f->GetUserData()) : nullptr;
+	ASObjectFactoryBinding *fb = static_cast<ASObjectFactoryBinding *>(p_gen->GetAuxiliary());
 	if (fb == nullptr) {
 		set_exception("AngelScript: factory metadata missing");
 		return;
@@ -456,16 +577,17 @@ void ASBindingObject::generic_release(asIScriptGeneric *p_gen) {
 }
 
 void ASBindingObject::generic_addref_noop(asIScriptGeneric *p_gen) {
-	// 有意留空：非 RefCounted 对象不参与脚本引用计数。
+	// 有意留空：非 RefCounted 句柄是弱引用，不参与引用计数；且槽里是 ObjectID，
+	// 对象已 free() 时也绝不能解引用。
+	(void)p_gen;
 }
 
 void ASBindingObject::generic_release_noop(asIScriptGeneric *p_gen) {
-	// 有意留空：句柄可能指向已被 free() 的对象，这里绝不能解引用。
+	(void)p_gen;
 }
 
 void ASBindingObject::generic_upcast(asIScriptGeneric *p_gen) {
-	asIScriptFunction *fn = p_gen->GetFunction();
-	ASUpcastBinding *b = fn != nullptr ? static_cast<ASUpcastBinding *>(fn->GetUserData()) : nullptr;
+	ASUpcastBinding *b = static_cast<ASUpcastBinding *>(p_gen->GetAuxiliary());
 	if (b == nullptr) {
 		set_exception("AngelScript: upcast metadata missing");
 		return;
