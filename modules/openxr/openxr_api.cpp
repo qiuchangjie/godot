@@ -341,6 +341,15 @@ String OpenXRAPI::get_error_string(XrResult p_result) const {
 	}
 }
 
+void OpenXRAPI::report_frame_loop_error(XrResult &r_last_error, XrResult p_result, const char *p_what) {
+	if (p_result == r_last_error) {
+		print_verbose(vformat("OpenXR: %s, again [%s]", p_what, get_error_string(p_result)));
+		return;
+	}
+	r_last_error = p_result;
+	print_error(vformat("OpenXR: %s [%s]. Repeats are only printed with --verbose.", p_what, get_error_string(p_result)));
+}
+
 String OpenXRAPI::get_swapchain_format_name(int64_t p_swapchain_format) const {
 	// This is rendering engine dependent...
 	if (graphics_extension) {
@@ -1906,7 +1915,10 @@ void OpenXRAPI::cleanup_extension_wrappers() {
 #ifndef DISABLE_DEPRECATED
 		// Fix crash when the extension wrapper comes from GDExtension.
 		OpenXRExtensionWrapperExtension *gdextension_extension_wrapper = dynamic_cast<OpenXRExtensionWrapperExtension *>(extension_wrapper);
-		memdelete(gdextension_extension_wrapper);
+		if (gdextension_extension_wrapper) {
+			memdelete(gdextension_extension_wrapper);
+			extension_wrapper = nullptr; // Avoid double free.
+		}
 #endif
 		memdelete(extension_wrapper);
 	}
@@ -2727,7 +2739,7 @@ bool OpenXRAPI::process() {
 
 	XrResult result = xrWaitFrame(session, &frame_wait_info, &frame_state);
 	if (XR_FAILED(result)) {
-		print_line("OpenXR: xrWaitFrame() was not successful [", get_error_string(result), "]");
+		report_frame_loop_error(last_wait_frame_error, result, "xrWaitFrame() was not successful");
 
 		// reset just in case
 		frame_state.predictedDisplayTime = 0;
@@ -2738,6 +2750,7 @@ bool OpenXRAPI::process() {
 
 		return false;
 	}
+	last_wait_frame_error = XR_SUCCESS;
 
 	if (frame_state.predictedDisplayPeriod > 500000000) {
 		// display period more then 0.5 seconds? must be wrong data
@@ -2803,9 +2816,10 @@ void OpenXRAPI::pre_render() {
 	};
 	XrResult result = xrBeginFrame(session, &frame_begin_info);
 	if (XR_FAILED(result)) {
-		print_line("OpenXR: failed to begin frame [", get_error_string(result), "]");
+		report_frame_loop_error(render_state.last_begin_frame_error, result, "failed to begin frame");
 		return;
 	}
+	render_state.last_begin_frame_error = XR_SUCCESS;
 
 	// Reset this, we haven't found a viewport for output yet
 	render_state.has_xr_viewport = false;
@@ -2832,9 +2846,11 @@ bool OpenXRAPI::pre_draw_viewport(RID p_render_target) {
 	// region of it, so we only need to recreate it when it needs to grow.
 	bool should_recreate_swapchain = recommended_size.width > render_state.main_swapchain_size.width || recommended_size.height > render_state.main_swapchain_size.height;
 
+	bool use_vrs_xr = (RSG::texture_storage->render_target_get_vrs_mode(p_render_target) == RSE::VIEWPORT_VRS_XR);
+
 	OpenXRFBFoveationExtension *fov_ext = OpenXRFBFoveationExtension::get_singleton();
 	if (fov_ext) {
-		bool subsampled_images_enabled = fov_ext->is_foveation_with_subsampled_images_enabled();
+		bool subsampled_images_enabled = fov_ext->is_foveation_with_subsampled_images_enabled() && use_vrs_xr;
 
 		// Mark subsampled images as enabled on the render target (so we try to use them).
 		RSG::texture_storage->render_target_set_subsampled_enabled(p_render_target, subsampled_images_enabled);
@@ -2842,7 +2858,7 @@ bool OpenXRAPI::pre_draw_viewport(RID p_render_target) {
 		// But check if they are "allowed", because they may not work if we are using
 		// any incompatible rendering features.
 		bool subsampled_images_allowed = RSG::texture_storage->render_target_is_subsampled_allowed(p_render_target);
-		fov_ext->set_foveation_with_subsampled_images_active(subsampled_images_allowed);
+		fov_ext->set_foveation_with_subsampled_images_active(subsampled_images_allowed && use_vrs_xr);
 
 		bool use_subsampled_images = subsampled_images_enabled && subsampled_images_allowed;
 		if (render_state.use_subsampled_images != use_subsampled_images) {
@@ -2878,7 +2894,6 @@ bool OpenXRAPI::pre_draw_viewport(RID p_render_target) {
 	}
 
 	if (fov_ext && fov_ext->is_enabled() && fov_ext->get_foveation_level() > 0 && render_state.main_swapchains[OPENXR_SWAPCHAIN_COLOR].get_density_map().is_valid()) {
-		bool use_vrs_xr = (RSG::texture_storage->render_target_get_vrs_mode(p_render_target) == RSE::VIEWPORT_VRS_XR);
 		if (render_state.use_vrs_xr != use_vrs_xr) {
 			render_state.use_vrs_xr = use_vrs_xr;
 			if (!use_vrs_xr) {
@@ -3034,9 +3049,10 @@ void OpenXRAPI::end_frame() {
 		};
 		result = xrEndFrame(session, &frame_end_info);
 		if (XR_FAILED(result)) {
-			print_line("OpenXR: rendering skipped and failed to end frame! [", get_error_string(result), "]");
+			report_frame_loop_error(render_state.last_end_frame_error, result, "rendering skipped and failed to end frame");
 			return;
 		}
+		render_state.last_end_frame_error = XR_SUCCESS;
 
 		end_debug_label_region(); // Session frame #
 
@@ -3142,9 +3158,10 @@ void OpenXRAPI::end_frame() {
 	};
 	result = xrEndFrame(session, &frame_end_info);
 	if (XR_FAILED(result)) {
-		print_line("OpenXR: failed to end frame! [", get_error_string(result), "]");
+		report_frame_loop_error(render_state.last_end_frame_error, result, "failed to end frame");
 		return;
 	}
+	render_state.last_end_frame_error = XR_SUCCESS;
 
 	end_debug_label_region(); // Session frame #
 }

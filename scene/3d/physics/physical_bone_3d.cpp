@@ -903,7 +903,7 @@ void PhysicalBone3D::_bind_methods() {
 
 	ADD_PROPERTY(PropertyInfo(Variant::TRANSFORM3D, "body_offset", PROPERTY_HINT_NONE, "suffix:m"), "set_body_offset", "get_body_offset");
 
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mass", PROPERTY_HINT_RANGE, "0.01,1000,0.01,or_greater,exp,suffix:kg"), "set_mass", "get_mass");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mass", PROPERTY_HINT_RANGE, "0.001,1000,0.001,or_greater,exp,suffix:kg"), "set_mass", "get_mass");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "friction", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_friction", "get_friction");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bounce", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_bounce", "get_bounce");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gravity_scale", PROPERTY_HINT_RANGE, "-8,8,0.001,or_less,or_greater"), "set_gravity_scale", "get_gravity_scale");
@@ -925,6 +925,16 @@ void PhysicalBone3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(JOINT_TYPE_HINGE);
 	BIND_ENUM_CONSTANT(JOINT_TYPE_SLIDER);
 	BIND_ENUM_CONSTANT(JOINT_TYPE_6DOF);
+}
+
+template <typename T>
+void PhysicalBone3D::_make_joint_data() {
+	joint_data = memnew(T);
+#ifdef TOOLS_ENABLED
+	if (Engine::get_singleton()->is_editor_hint()) {
+		joint_defaults = memnew(T);
+	}
+#endif
 }
 
 void PhysicalBone3D::_update_joint_offset() {
@@ -1101,21 +1111,26 @@ void PhysicalBone3D::set_joint_type(JointType p_joint_type) {
 
 	memdelete(joint_data);
 	joint_data = nullptr;
+#ifdef TOOLS_ENABLED
+	memdelete(joint_defaults);
+	joint_defaults = nullptr;
+#endif
+
 	switch (p_joint_type) {
 		case JOINT_TYPE_PIN:
-			joint_data = memnew(PinJointData);
+			_make_joint_data<PinJointData>();
 			break;
 		case JOINT_TYPE_CONE:
-			joint_data = memnew(ConeJointData);
+			_make_joint_data<ConeJointData>();
 			break;
 		case JOINT_TYPE_HINGE:
-			joint_data = memnew(HingeJointData);
+			_make_joint_data<HingeJointData>();
 			break;
 		case JOINT_TYPE_SLIDER:
-			joint_data = memnew(SliderJointData);
+			_make_joint_data<SliderJointData>();
 			break;
 		case JOINT_TYPE_6DOF:
-			joint_data = memnew(SixDOFJointData);
+			_make_joint_data<SixDOFJointData>();
 			break;
 		case JOINT_TYPE_NONE:
 			break;
@@ -1291,6 +1306,9 @@ PhysicalBone3D::PhysicalBone3D() :
 
 PhysicalBone3D::~PhysicalBone3D() {
 	memdelete(joint_data);
+#ifdef TOOLS_ENABLED
+	memdelete(joint_defaults);
+#endif
 	ERR_FAIL_NULL(PhysicsServer3D::get_singleton());
 	PhysicsServer3D::get_singleton()->free_rid(joint);
 }
@@ -1373,3 +1391,20 @@ void PhysicalBone3D::_stop_physics_simulation() {
 		_internal_simulate_physics = false;
 	}
 }
+
+#ifdef TOOLS_ENABLED
+bool PhysicalBone3D::_property_can_revert(const StringName &p_name) const {
+	if (joint_defaults) {
+		Variant ret;
+		return joint_defaults->_get(p_name, ret);
+	}
+	return false;
+}
+
+bool PhysicalBone3D::_property_get_revert(const StringName &p_name, Variant &r_property) const {
+	if (joint_defaults) {
+		return joint_defaults->_get(p_name, r_property);
+	}
+	return false;
+}
+#endif

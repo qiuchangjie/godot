@@ -755,6 +755,13 @@ void ScriptTextEditor::_update_background_color() {
 			int warning_start_column = warning.start_column - 1;
 			int warning_end_line = CLAMP(warning.end_line - 1, 0, te->get_line_count() - 1);
 			int warning_end_column = warning.end_column - 1;
+
+			// If this warning's range extends to a non-existent line, then the
+			// best we can do is have it go to the end of this current line.
+			if (warning.end_line - 1 >= te->get_line_count() - 1) {
+				warning_end_column = te->get_line(warning_end_line).length();
+			}
+
 			int folded_line_header = te->get_folded_line_header(warning_start_line);
 
 			if (warning_underline_color.a != 0.0) {
@@ -782,6 +789,13 @@ void ScriptTextEditor::_update_background_color() {
 			int error_start_column = error.start_column - 1;
 			int error_end_line = CLAMP(error.end_line - 1, 0, te->get_line_count() - 1);
 			int error_end_column = error.end_column - 1;
+
+			// If this error's range extends to a non-existent line, then the
+			// best we can do is have it go to the end of this current line.
+			if (error.end_line - 1 >= te->get_line_count() - 1) {
+				error_end_column = te->get_line(error_end_line).length();
+			}
+
 			int folded_line_header = te->get_folded_line_header(error_start_line);
 
 			if (error_underline_color.a != 0.0) {
@@ -1602,16 +1616,36 @@ void ScriptTextEditor::_update_connected_methods() {
 			continue;
 		}
 
+		StringName base_class = script->get_instance_base_type();
+		Ref<Script> inherited_script = script->get_base_script();
+
 		// Account for inner classes by stripping the class names from the method,
 		// starting from the right since our inner class might be inside of another inner class.
+		// We then iterate down the inner class "path" to ensure we're checking the correct
+		// base class for methods to mark as overridden.
+		String found_base_class;
 		int pos = raw_name.rfind_char('.');
 		if (pos != -1) {
 			name = raw_name.substr(pos + 1);
+
+			// We start with the main script class, and work through inner classes
+			// until we get to the inner class that is extending a type including
+			// overriding methods.
+			Ref<Script> current_inner_class_script = script;
+			for (const String &current_inner_class_name : raw_name.substr(0, pos).split(".")) {
+				HashMap<StringName, Variant> consts;
+				current_inner_class_script->get_constants(&consts);
+
+				if (consts.has(current_inner_class_name)) {
+					current_inner_class_script = consts.get(current_inner_class_name);
+				} else {
+					break;
+				}
+			}
+			base_class = current_inner_class_script->get_instance_base_type();
+			inherited_script = current_inner_class_script->get_base_script();
 		}
 
-		String found_base_class;
-		StringName base_class = script->get_instance_base_type();
-		Ref<Script> inherited_script = script->get_base_script();
 		while (inherited_script.is_valid()) {
 			if (inherited_script->has_method(name)) {
 				found_base_class = "script:" + inherited_script->get_path();

@@ -45,6 +45,7 @@ import android.os.Bundle
 import android.os.Debug
 import android.os.Environment
 import android.os.Process
+import android.system.Os
 import android.util.Log
 import android.view.View
 import android.widget.TextView
@@ -97,6 +98,7 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 		internal const val EXTRA_GAME_MENU_STATE = "game_menu_state"
 		internal const val EXTRA_IS_GAME_EMBEDDED = "is_game_embedded"
 		internal const val EXTRA_IS_GAME_RUNNING = "is_game_running"
+		private const val EXTRA_EDITOR_ENV_VARIABLES = "editor_env_variables"
 
 		// Benchmarking extras.
 		private const val EXTRA_LOAD_EMPTY_BENCHMARK_PROJECT = "load_empty_benchmark_project"
@@ -357,7 +359,7 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 	}
 
 	override fun onNewIntent(newIntent: Intent) {
-		if (newIntent.hasCategory(HYBRID_APP_PANEL_CATEGORY) || newIntent.hasCategory(HYBRID_APP_IMMERSIVE_CATEGORY)) {
+		if (newIntent.hasCategory(HYBRID_APP_PANEL_CATEGORY) || newIntent.hasCategory(HYBRID_APP_IMMERSIVE_CATEGORY) || newIntent.hasCategory(HYBRID_APP_SPATIAL_CATEGORY)) {
 			val params = retrieveCommandLineParamsFromLaunchIntent(newIntent)
 			Log.d(TAG, "Received hybrid transition intent $newIntent with parameters ${params.contentToString()}")
 			// Override EXTRA_NEW_LAUNCH so the editor is not restarted
@@ -369,6 +371,7 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 				var xrMode = XR_MODE_DEFAULT
 				var path = ""
 				var base64HybridData = ""
+				var explicitHybridSwitchFlag = false
 				if (params.isNotEmpty()) {
 					val sceneIndex = params.indexOf(SCENE_ARG)
 					if (sceneIndex != -1 && sceneIndex + 1 < params.size) {
@@ -389,12 +392,18 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 					if (hybridDataIndex != -1 && hybridDataIndex + 1 < params.size) {
 						base64HybridData = params[hybridDataIndex + 1]
 					}
+
+					explicitHybridSwitchFlag = params.contains(EXPLICIT_HYBRID_SWITCH_ARG)
 				}
 
 				val sceneArgs = mutableSetOf(XR_MODE_ARG, xrMode, HYBRID_DATA_ARG, base64HybridData).apply {
 					if (path.isNotEmpty() && scene.isEmpty()) {
 						add(PATH_ARG)
 						add(path)
+					}
+
+					if (explicitHybridSwitchFlag) {
+						add(EXPLICIT_HYBRID_SWITCH_ARG)
 					}
 				}
 
@@ -407,6 +416,14 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 	}
 
 	override fun handleStartIntent(intent: Intent, newLaunch: Boolean) {
+		// Apply the passed on environment variables.
+		val envVariables = intent.getBundleExtra(EXTRA_EDITOR_ENV_VARIABLES)
+		if (envVariables != null && !envVariables.isEmpty) {
+			for (env in envVariables.keySet()) {
+				Os.setenv(env, envVariables.getString(env), true)
+			}
+		}
+
 		when (intent.action) {
 			Intent.ACTION_VIEW -> {
 				val rootDir = Environment.getExternalStorageDirectory().canonicalPath
@@ -665,7 +682,7 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 			val gameInfo = if (xrMode == XR_MODE_ON) {
 				XR_RUN_GAME_INFO
 			} else if ((xrMode == XR_MODE_DEFAULT && GodotLib.getGlobal("xr/openxr/enabled").toBoolean())) {
-				if (getHybridAppLaunchMode() == HybridMode.PANEL) {
+				if (getHybridAppLaunchMode() == HybridLaunchMode.PANEL) {
 					getRunGameInfoForInstance(runInstance)
 				} else {
 					XR_RUN_GAME_INFO
@@ -762,11 +779,22 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 			ActivityOptions.makeScaleUpAnimation(sourceView, startX, startY, 0, 0)
 		}
 
+		// Retrieve the environment variables.
+		val envVariables = Bundle().apply {
+			val customFeatures = Os.getenv("GODOT_EDITOR_CUSTOM_FEATURES")
+			if (!customFeatures.isNullOrEmpty()) {
+				putString("GODOT_EDITOR_CUSTOM_FEATURES", customFeatures)
+			}
+		}
+
 		val newInstance = getNewGodotInstanceIntent(editorWindowInfo, args)
 		newInstance.apply {
 			putExtra(EXTRA_EDITOR_HINT, godot?.isEditorHint() == true)
 			putExtra(EXTRA_PROJECT_MANAGER_HINT, godot?.isProjectManagerHint() == true)
 			putExtra(EXTRA_GAME_MENU_STATE, gameMenuState)
+
+			// Environment variables are process specific, so we need to pass them to the new process we're starting.
+			putExtra(EXTRA_EDITOR_ENV_VARIABLES, envVariables)
 		}
 
 		if (editorWindowInfo.windowClassName == javaClass.name) {
@@ -1057,7 +1085,17 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 	override fun onEditorWorkspaceSelected(workspace: String) {
 		activeWorkspace = workspace
 
-		if (workspace == GAME_WORKSPACE && shouldShowGameMenuBar()) {
+		if (workspace == GAME_WORKSPACE) {
+			showEditorGameDock()
+		}
+
+		if (!isLargeScreen) {
+			toggleEditorOrientation()
+		}
+	}
+
+	final override fun showEditorGameDock() {
+		if (shouldShowGameMenuBar()) {
 			if (editorMessageDispatcher.bringEditorWindowToFront(EMBEDDED_RUN_GAME_INFO) ||
 				editorMessageDispatcher.bringEditorWindowToFront(RUN_GAME_INFO_0) ||
 				editorMessageDispatcher.bringEditorWindowToFront(RUN_GAME_INFO_1)) {
@@ -1075,10 +1113,6 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 				embeddedGameViewContainerWindow?.isVisible = true
 			}
 		}
-
-		if (!isLargeScreen) {
-			toggleEditorOrientation()
-		}
 	}
 
 	override fun onDistractionFreeModeChanged(enabled: Boolean) {
@@ -1091,7 +1125,7 @@ abstract class BaseGodotEditor : GodotActivity(), GameMenuFragment.GameMenuListe
 	private fun toggleEditorOrientation() {
 		if (distractionFreeModeEnabled) {
 			changingOrientationAllowed = true
-			requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER
+			requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
 		} else if (changingOrientationAllowed) {
 			requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
 			changingOrientationAllowed = false

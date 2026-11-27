@@ -464,6 +464,7 @@ private:
 	bool requested_first_scan = false;
 	bool waiting_for_first_scan = true;
 	bool load_editor_layout_done = false;
+	bool resource_counter_queued = false;
 
 	HashSet<Ref<Translation>> tracked_translations;
 	bool pending_translation_notification = false;
@@ -637,7 +638,6 @@ private:
 	void _update_recent_scenes();
 	void _open_recent_scene(int p_idx);
 
-	void _dropped_files(const Vector<String> &p_files);
 	void _add_dropped_files_recursive(const Vector<String> &p_files, String to_path);
 
 	void _update_vsync_mode();
@@ -647,6 +647,8 @@ private:
 	void _translation_resources_changed();
 	void _queue_translation_notification();
 	void _propagate_translation_notification();
+	void _queue_resource_counter_changed();
+	void _emit_resource_counter_changed();
 
 	void _renderer_selected(int p_index);
 	void _update_renderer_color();
@@ -759,6 +761,7 @@ protected:
 public:
 	// Public for use as signal callback.
 	void _on_plugin_ready(Object *p_script, const String &p_activate_name);
+	void _dropped_files(const Vector<String> &p_files);
 
 	void init_plugins();
 
@@ -886,6 +889,8 @@ public:
 	void set_edited_scene_root(Node *p_scene, bool p_auto_add);
 	Node *get_edited_scene() { return editor_data.get_edited_scene_root(); }
 
+	void soft_reload_edited_scene();
+
 	String get_preview_locale() const;
 	bool is_pseudolocalization_enabled() const;
 	void set_preview_locale(const String &p_locale, bool p_pseudolocalization);
@@ -944,6 +949,7 @@ public:
 	HashMap<int, SceneModificationsEntry> scenes_modification_table;
 	List<String> scenes_reimported;
 	List<String> resources_reimported;
+	List<String> uninstanced_scenes_reimported;
 
 	void update_node_from_node_modification_entry(Node *p_node, ModificationNodeEntry &p_node_modification);
 
@@ -1024,6 +1030,7 @@ public:
 	void find_all_instances_inheriting_path_in_node(Node *p_root, Node *p_node, const String &p_instance_path, HashSet<Node *> &p_instance_list);
 	void preload_reimporting_with_path_in_edited_scenes(const List<String> &p_scenes);
 	void reload_instances_with_path_in_edited_scenes();
+	void reload_uninstanced_scenes();
 
 	bool is_exiting() const { return exiting; }
 

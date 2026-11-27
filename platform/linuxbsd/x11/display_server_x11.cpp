@@ -2487,6 +2487,9 @@ void DisplayServerX11::window_set_transient(DisplayServerEnums::WindowID p_windo
 			if ((xwa.map_state == IsViewable) && !wd_parent.no_focus && !wd_window.is_popup && _window_focus_check()) {
 				_set_input_focus(wd_parent.x11_window, RevertToPointerRoot);
 			}
+		} else if (wd_window.focused && wd_window.ime_active && wd_parent.is_popup && (xwa.map_state == IsViewable)) {
+			// Popups are not managed by the window manager, so focus taken by the IME window of a nested popup (e.g. its search bar) has to be returned to the parent popup manually.
+			_set_input_focus(wd_parent.x11_window, RevertToPointerRoot);
 		}
 	} else {
 		ERR_FAIL_COND(!windows.has(p_parent));
@@ -2774,15 +2777,12 @@ void DisplayServerX11::window_set_size(const Size2i p_size, DisplayServerEnums::
 	// Resize the window
 	XResizeWindow(x11_display, wd.x11_window, size.x, size.y);
 
-	for (int timeout = 0; timeout < 50; ++timeout) {
-		XSync(x11_display, False);
-		XGetWindowAttributes(x11_display, wd.x11_window, &xwa);
+	XSync(x11_display, False);
+	XGetWindowAttributes(x11_display, wd.x11_window, &xwa);
 
-		if (old_w != xwa.width || old_h != xwa.height) {
-			break;
-		}
-
-		OS::get_singleton()->delay_usec(10'000);
+	wd.size = Vector2i(xwa.width, xwa.height);
+	if (old_w == xwa.width && old_h == xwa.height) {
+		return;
 	}
 
 	// Keep rendering context window size in sync
@@ -3717,6 +3717,9 @@ void DisplayServerX11::cursor_set_custom_image(const Ref<Resource> &p_cursor, Di
 		ERR_FAIL_NULL(cursor_image->pixels);
 
 		// Save it for a further usage
+		if (cursors[p_shape] != None) {
+			XFreeCursor(x11_display, cursors[p_shape]);
+		}
 		cursors[p_shape] = XcursorImageLoadCursor(x11_display, cursor_image);
 
 		Vector<Variant> params;
@@ -3736,6 +3739,11 @@ void DisplayServerX11::cursor_set_custom_image(const Ref<Resource> &p_cursor, Di
 		XcursorImageDestroy(cursor_image);
 	} else {
 		// Reset to default system cursor
+		if (cursors[p_shape] != None) {
+			XFreeCursor(x11_display, cursors[p_shape]);
+		}
+		cursors[p_shape] = None;
+
 		if (cursor_img[p_shape]) {
 			cursors[p_shape] = XcursorImageLoadCursor(x11_display, cursor_img[p_shape]);
 		}
@@ -3746,6 +3754,12 @@ void DisplayServerX11::cursor_set_custom_image(const Ref<Resource> &p_cursor, Di
 		current_cursor = DisplayServerEnums::CURSOR_MAX;
 		cursor_set_shape(c);
 	}
+}
+
+void DisplayServerX11::cursor_clear_custom_image_cache() {
+	_THREAD_SAFE_METHOD_
+
+	cursors_cache.clear();
 }
 
 bool DisplayServerX11::get_swap_cancel_ok() {
@@ -7414,7 +7428,11 @@ DisplayServerX11::DisplayServerX11(const String &p_rendering_driver, DisplayServ
 					fallback = "bd_double_arrow";
 					break;
 				case DisplayServerEnums::CURSOR_MOVE:
-					cursor_img[i] = cursor_img[DisplayServerEnums::CURSOR_DRAG];
+					// Fallback to DRAG, but reload instead of aliasing to avoid double-free on cleanup.
+					cursor_img[i] = XcursorLibraryLoadImage("fleur", cursor_theme, cursor_size);
+					if (!cursor_img[i]) {
+						fallback = "grabbing";
+					}
 					break;
 				case DisplayServerEnums::CURSOR_VSPLIT:
 					fallback = "sb_v_double_arrow";
@@ -7517,14 +7535,17 @@ DisplayServerX11::DisplayServerX11(const String &p_rendering_driver, DisplayServ
 
 DisplayServerX11::~DisplayServerX11() {
 	// Send owned clipboard data to clipboard manager before exit.
-	Window x11_main_window = windows[DisplayServerEnums::MAIN_WINDOW_ID].x11_window;
-	if (x11_main_window) {
+	const WindowData *main_window = windows.getptr(DisplayServerEnums::MAIN_WINDOW_ID);
+	if (main_window && main_window->x11_window) {
+		const Window x11_main_window = main_window->x11_window;
 		_clipboard_transfer_ownership(XA_PRIMARY, x11_main_window);
 		_clipboard_transfer_ownership(XInternAtom(x11_display, "CLIPBOARD", 0), x11_main_window);
 	}
 
-	events_thread_done.set();
-	events_thread.wait_to_finish();
+	if (events_thread.is_started()) {
+		events_thread_done.set();
+		events_thread.wait_to_finish();
+	}
 
 	if (native_menu) {
 		memdelete(native_menu);
