@@ -226,6 +226,8 @@ Vector2i _logical_to_physical(const Vector2i &p_point) {
 }
 
 Vector2i DisplayServerWindows::_get_screen_expand_offset(int p_screen) const {
+	constexpr int FS_TRANSP_BORDER = 2;
+
 	Vector2i p1 = _logical_to_physical(screen_get_position(p_screen));
 	Vector2i p2 = _logical_to_physical(screen_get_position(p_screen) + screen_get_size(p_screen));
 
@@ -246,16 +248,16 @@ Vector2i DisplayServerWindows::_get_screen_expand_offset(int p_screen) const {
 	}
 
 	if (screen_down == -1) {
-		return Vector2i(0, 2);
+		return Vector2i(0, FS_TRANSP_BORDER);
 	} else if (screen_right == -1) {
-		return Vector2i(2, 0);
+		return Vector2i(FS_TRANSP_BORDER, 0);
 	} else {
 		int diff_d = screen_get_refresh_rate(p_screen) - screen_get_refresh_rate(screen_down);
 		int diff_r = screen_get_refresh_rate(p_screen) - screen_get_refresh_rate(screen_right);
 		if (diff_d < diff_r) {
-			return Vector2i(0, 2);
+			return Vector2i(0, FS_TRANSP_BORDER);
 		} else {
-			return Vector2i(2, 0);
+			return Vector2i(FS_TRANSP_BORDER, 0);
 		}
 	}
 }
@@ -297,34 +299,7 @@ void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_
 
 			_register_raw_input_devices(window_id);
 
-			const BitField<WinKeyModifierMask> &mods = _get_mods();
-
-			Ref<InputEventMouseMotion> mm;
-			mm.instantiate();
-
-			mm->set_window_id(window_id);
-			mm->set_pressure(windows[window_id].last_pressure);
-			mm->set_ctrl_pressed(mods.has_flag(WinKeyModifierMask::CTRL));
-			mm->set_shift_pressed(mods.has_flag(WinKeyModifierMask::SHIFT));
-			mm->set_alt_pressed(mods.has_flag(WinKeyModifierMask::ALT));
-			mm->set_meta_pressed(mods.has_flag(WinKeyModifierMask::META));
-			mm->set_button_mask(mouse_get_button_state());
-
-			mm->set_position(center);
-			mm->set_global_position(center);
-			mm->set_relative(Vector2(0, 0));
-			mm->set_relative_screen_position(Vector2(0, 0));
-			mm->set_velocity(Vector2(0, 0));
-			mm->set_screen_velocity(Vector2(0, 0));
-
-			mm->set_global_position(center);
-			mm->set_velocity(Vector2(0, 0));
-			mm->set_screen_velocity(Vector2(0, 0));
-
-			if (windows[window_id].window_focused || window_get_active_popup() == window_id) {
-				Input::get_singleton()->parse_input_event(mm);
-			}
-
+			Input::get_singleton()->set_mouse_position(center);
 			old_x = center.x;
 			old_y = center.y;
 		}
@@ -1412,6 +1387,21 @@ static BOOL CALLBACK _MonitorEnumProcOrigin(HMONITOR hMonitor, HDC hdcMonitor, L
 	return TRUE;
 }
 
+typedef struct {
+	bool found;
+	RECT rect;
+} EnumMatchScreen;
+
+static BOOL CALLBACK _MonitorEnumMatchScreen(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
+	EnumMatchScreen *data = (EnumMatchScreen *)dwData;
+	if (data->rect.left == lprcMonitor->left && data->rect.right == lprcMonitor->right && data->rect.top == lprcMonitor->top && data->rect.bottom == lprcMonitor->bottom) {
+		data->found = true;
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 Point2i DisplayServerWindows::_get_screens_origin() const {
 	_THREAD_SAFE_METHOD_
 
@@ -2128,6 +2118,13 @@ void DisplayServerWindows::gl_window_make_current(DisplayServerEnums::WindowID p
 	if (gl_manager_native) {
 		gl_manager_native->window_make_current(p_window_id);
 	}
+	if (windows.has(p_window_id)) {
+		WindowData &wd = windows[p_window_id];
+		Vector2i off = (wd.multiwindow_fs || (!wd.fullscreen && wd.borderless && wd.maximized)) ? _get_screen_expand_offset(window_get_current_screen(p_window_id)) : Vector2i();
+		RasterizerGLES3::set_screen_y_offset(off.y);
+	} else {
+		RasterizerGLES3::set_screen_y_offset(0);
+	}
 #endif
 }
 
@@ -2743,6 +2740,8 @@ void DisplayServerWindows::_update_window_style(DisplayServerEnums::WindowID p_w
 	SetWindowLongPtr(wd.hWnd, GWL_EXSTYLE, style_ex);
 
 	if (wd.icon_set) {
+		SendMessage(wd.hWnd, WM_SETICON, ICON_SMALL, 0);
+		SendMessage(wd.hWnd, WM_SETICON, ICON_BIG, 0);
 		if (wd.icon_big && !wd.icon_small) {
 			SendMessage(wd.hWnd, WM_SETICON, ICON_BIG, (LPARAM)wd.icon_big);
 			SendMessage(wd.hWnd, WM_SETICON, ICON_SMALL, (LPARAM)wd.icon_big);
@@ -2817,6 +2816,16 @@ void DisplayServerWindows::window_set_mode(DisplayServerEnums::WindowMode p_mode
 			rect.right = wd.width;
 			rect.top = 0;
 			rect.bottom = wd.height;
+		}
+
+		// Move window a bit if its client area fully matches area of a screen.
+		EnumMatchScreen data = { false, rect };
+		EnumDisplayMonitors(nullptr, nullptr, _MonitorEnumMatchScreen, (LPARAM)&data);
+		if (data.found) {
+			rect.left += GetSystemMetrics(SM_CXSIZEFRAME);
+			rect.top += GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CYCAPTION);
+			rect.right += GetSystemMetrics(SM_CXSIZEFRAME);
+			rect.bottom += GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CYCAPTION);
 		}
 
 		ShowWindow(wd.hWnd, SW_RESTORE);
@@ -3272,6 +3281,10 @@ Vector2i DisplayServerWindows::ime_get_selection() const {
 	_THREAD_SAFE_METHOD_
 
 	DisplayServerEnums::WindowID window_id = _get_focused_window_or_popup();
+	// Find focusable parent.
+	while (windows.has(window_id) && windows[window_id].no_focus && windows[window_id].transient_parent != DisplayServerEnums::INVALID_WINDOW_ID) {
+		window_id = windows[window_id].transient_parent;
+	}
 	const WindowData &wd = windows[window_id];
 	if (!wd.ime_active) {
 		return Vector2i();
@@ -3304,6 +3317,10 @@ String DisplayServerWindows::ime_get_text() const {
 	_THREAD_SAFE_METHOD_
 
 	DisplayServerEnums::WindowID window_id = _get_focused_window_or_popup();
+	// Find focusable parent.
+	while (windows.has(window_id) && windows[window_id].no_focus && windows[window_id].transient_parent != DisplayServerEnums::INVALID_WINDOW_ID) {
+		window_id = windows[window_id].transient_parent;
+	}
 	const WindowData &wd = windows[window_id];
 	if (!wd.ime_active) {
 		return String();
@@ -3323,8 +3340,13 @@ String DisplayServerWindows::ime_get_text() const {
 void DisplayServerWindows::window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window) {
 	_THREAD_SAFE_METHOD_
 
-	ERR_FAIL_COND(!windows.has(p_window));
-	WindowData &wd = windows[p_window];
+	DisplayServerEnums::WindowID window_id = p_window;
+	ERR_FAIL_COND(!windows.has(window_id));
+	// Find focusable parent.
+	while (windows.has(window_id) && windows[window_id].no_focus && windows[window_id].transient_parent != DisplayServerEnums::INVALID_WINDOW_ID) {
+		window_id = windows[window_id].transient_parent;
+	}
+	WindowData &wd = windows[window_id];
 
 	if (p_active) {
 		wd.ime_active = true;
@@ -3341,10 +3363,17 @@ void DisplayServerWindows::window_set_ime_active(const bool p_active, DisplaySer
 void DisplayServerWindows::window_set_ime_position(const Point2i &p_pos, DisplayServerEnums::WindowID p_window) {
 	_THREAD_SAFE_METHOD_
 
-	ERR_FAIL_COND(!windows.has(p_window));
-	WindowData &wd = windows[p_window];
+	DisplayServerEnums::WindowID window_id = p_window;
+	ERR_FAIL_COND(!windows.has(window_id));
+	Vector2 offset = windows[window_id].last_pos;
+	// Find focusable parent.
+	while (windows.has(window_id) && windows[window_id].no_focus && windows[window_id].transient_parent != DisplayServerEnums::INVALID_WINDOW_ID) {
+		window_id = windows[window_id].transient_parent;
+	}
+	offset = offset - windows[window_id].last_pos;
+	WindowData &wd = windows[window_id];
 
-	wd.im_position = p_pos;
+	wd.im_position = p_pos + offset;
 
 	HIMC himc = ImmGetContext(wd.hWnd);
 	if (himc == (HIMC) nullptr) {
@@ -3517,6 +3546,12 @@ void DisplayServerWindows::cursor_set_custom_image(const Ref<Resource> &p_cursor
 		cursor_shape = DisplayServerEnums::CURSOR_MAX;
 		cursor_set_shape(c);
 	}
+}
+
+void DisplayServerWindows::cursor_clear_custom_image_cache() {
+	_THREAD_SAFE_METHOD_
+
+	cursors_cache.clear();
 }
 
 bool DisplayServerWindows::get_swap_cancel_ok() {
@@ -4549,7 +4584,10 @@ void DisplayServerWindows::process_events() {
 
 	_THREAD_SAFE_LOCK_
 
-	bool has_touch_events = process_raw_input();
+	bool has_touch_events = true;
+	if (!disable_bulk_raw_input) {
+		has_touch_events = process_raw_input();
+	}
 
 	DisplayServerEnums::WindowID window_id = _get_focused_window_or_popup();
 	const WindowData &wd = windows[window_id];
@@ -6729,6 +6767,48 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			_legacy_update_hdr_output_for_tracked_windows(true);
 		} break;
 
+		case WM_WINDOWPOSCHANGING: {
+			WindowData &window = windows[window_id];
+			WINDOWPOS *window_pos_params = (WINDOWPOS *)lParam;
+			bool need_off = (window.multiwindow_fs || (!window.fullscreen && window.borderless && window.maximized));
+			if (need_off && !(window_pos_params->flags & SWP_NOSIZE)) {
+				Rect2i new_window_rect = Rect2i(window_pos_params->x, window_pos_params->y, window_pos_params->cx, window_pos_params->cy);
+				new_window_rect.position -= _get_screens_origin();
+
+				int screen_id = window_get_current_screen(window_id);
+				int rq_screen = get_screen_from_rect(new_window_rect);
+
+				Size2i screen_size = screen_get_size(screen_id);
+				Point2i screen_position = screen_get_position(screen_id);
+				Vector2i off = _get_screen_expand_offset(window_get_current_screen(window_id));
+				Rect2i window_rect;
+				{
+					RECT wrect;
+					GetWindowRect(hWnd, &wrect);
+					window_rect = Rect2i(wrect.left, wrect.top, wrect.right - wrect.left - off.x, wrect.bottom - wrect.top - off.y);
+					window_rect.position -= _get_screens_origin();
+				}
+				if (window_rect.position == screen_position && window_rect.size == screen_size && screen_id != rq_screen) {
+					// External source try to move fullscreen window to another screen, adjust it to match screen size, update pre-fullscreen rect and passthrough rect if necessary.
+					Size2i new_screen_size = screen_get_size(rq_screen);
+					Point2i new_screen_position = screen_get_position(rq_screen);
+					if (window.pre_fs_valid) {
+						window.pre_fs_rect.left = window.pre_fs_rect.left - screen_position.x + new_screen_position.x;
+						window.pre_fs_rect.right = window.pre_fs_rect.right - screen_position.x + new_screen_position.x;
+						window.pre_fs_rect.top = window.pre_fs_rect.top - screen_position.y + new_screen_position.y;
+						window.pre_fs_rect.bottom = window.pre_fs_rect.bottom - screen_position.y + new_screen_position.y;
+					}
+					new_screen_position += _get_screens_origin();
+					window_pos_params->x = new_screen_position.x;
+					window_pos_params->y = new_screen_position.y;
+					window_pos_params->cx = new_screen_size.x + off.x;
+					window_pos_params->cy = new_screen_size.y + off.y;
+					window.should_update_mpass = true;
+					return 0;
+				}
+			}
+		} break;
+
 		case WM_WINDOWPOSCHANGED: {
 			WindowData &window = windows[window_id];
 
@@ -6797,6 +6877,10 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 					window.height_with_decorations = window_rect.size.height;
 
 					rect_changed = true;
+				}
+				if (window.should_update_mpass) {
+					window.should_update_mpass = false;
+					_update_window_mouse_passthrough(window_id);
 				}
 #if defined(RD_ENABLED)
 				if (window.create_completed && rendering_context && window.rendering_context_window_created) {
@@ -8082,6 +8166,7 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 		return;
 	}
 
+	disable_bulk_raw_input = GLOBAL_GET("input_devices/compatibility/windows/disable_raw_event_bulk_processing");
 	_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
 
 	String appname;

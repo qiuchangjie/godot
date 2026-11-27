@@ -1038,7 +1038,6 @@ void FileSystemDock::_update_file_list(bool p_keep_selection, const Vector<Strin
 	_set_current_path_line_edit_text(current_path);
 
 	String directory = current_path;
-	String file = "";
 
 	int thumbnail_size = thumbnail_size_setting * EDSCALE;
 	Ref<Texture2D> folder_thumbnail;
@@ -1148,7 +1147,6 @@ void FileSystemDock::_update_file_list(bool p_keep_selection, const Vector<Strin
 		EditorFileSystemDirectory *efd = EditorFileSystem::get_singleton()->get_filesystem_path(directory);
 		if (!efd) {
 			directory = current_path.get_base_dir();
-			file = current_path.get_file();
 			efd = EditorFileSystem::get_singleton()->get_filesystem_path(directory);
 		}
 		if (!efd) {
@@ -1275,7 +1273,7 @@ void FileSystemDock::_update_file_list(bool p_keep_selection, const Vector<Strin
 			valid_selection.insert(item_index);
 		}
 
-		if (!p_keep_selection && !file.is_empty() && fname == file) {
+		if (!p_keep_selection && current_path == fpath) {
 			files->select(item_index, true);
 			files->ensure_current_is_visible();
 		}
@@ -4206,7 +4204,9 @@ void FileSystemDock::_update_import_dock() {
 	Vector<String> efiles;
 	String extension;
 	for (const String &fpath : selected) {
-		_get_imported_files(fpath, extension, efiles);
+		if (!_get_imported_files(fpath, extension, efiles)) {
+			break;
+		}
 	}
 
 	if (efiles.is_empty()) {
@@ -4558,7 +4558,7 @@ FileSystemDock::FileSystemDock() {
 	ED_SHORTCUT_OVERRIDE("filesystem_dock/rename", "macos", Key::ENTER);
 #if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
 	// Opening the system file manager or opening in an external program is not supported on the Android and web editors.
-	ED_SHORTCUT("filesystem_dock/show_in_explorer", TTRC("Open in File Manager"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::R);
+	ED_SHORTCUT("filesystem_dock/show_in_explorer", OS::get_singleton()->get_platform_string(OS::PLATFORM_STRING_FILE_MANAGER_OPEN), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::R);
 	ED_SHORTCUT("filesystem_dock/open_in_external_program", TTRC("Open in External Program"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::E);
 	ED_SHORTCUT("filesystem_dock/open_in_terminal", TTRC("Open in Terminal"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::T);
 #endif
@@ -4699,6 +4699,21 @@ FileSystemDock::FileSystemDock() {
 	file_list_button_sort = _create_file_menu_button();
 	path_hb->add_child(file_list_button_sort);
 
+	files = memnew(FileSystemList);
+	files->set_accessibility_name(TTRC("Files"));
+	files->set_select_mode(ItemList::SELECT_MULTI);
+	files->set_scroll_hint_mode(ItemList::SCROLL_HINT_MODE_TOP);
+	files->set_allow_rmb_select(true);
+	files->set_custom_minimum_size(Size2(0, 15 * EDSCALE));
+	files->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	SET_DRAG_FORWARDING_GCD(files, FileSystemDock);
+	files->connect("item_clicked", callable_mp(this, &FileSystemDock::_file_list_item_clicked));
+	files->connect(SceneStringName(gui_input), callable_mp(this, &FileSystemDock::_file_list_gui_input));
+	files->connect("multi_selected", callable_mp(this, &FileSystemDock::_file_multi_selected));
+	files->connect("empty_clicked", callable_mp(this, &FileSystemDock::_file_list_empty_clicked));
+	files->connect("item_edited", callable_mp(this, &FileSystemDock::_rename_operation_confirm).bind(false));
+	file_list_vb->add_child(files);
+
 	bottom_toolbar_hbc = memnew(HBoxContainer);
 	bottom_toolbar_hbc->set_alignment(BoxContainer::ALIGNMENT_END);
 	file_list_vb->add_child(bottom_toolbar_hbc);
@@ -4726,21 +4741,6 @@ FileSystemDock::FileSystemDock() {
 	button_file_list_display_mode->set_accessibility_name(TTRC("Display Mode"));
 	button_file_list_display_mode->set_theme_type_variation("FlatMenuButton");
 	bottom_toolbar_hbc->add_child(button_file_list_display_mode);
-
-	files = memnew(FileSystemList);
-	files->set_accessibility_name(TTRC("Files"));
-	files->set_select_mode(ItemList::SELECT_MULTI);
-	files->set_scroll_hint_mode(ItemList::SCROLL_HINT_MODE_TOP);
-	files->set_allow_rmb_select(true);
-	files->set_custom_minimum_size(Size2(0, 15 * EDSCALE));
-	files->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	SET_DRAG_FORWARDING_GCD(files, FileSystemDock);
-	files->connect("item_clicked", callable_mp(this, &FileSystemDock::_file_list_item_clicked));
-	files->connect(SceneStringName(gui_input), callable_mp(this, &FileSystemDock::_file_list_gui_input));
-	files->connect("multi_selected", callable_mp(this, &FileSystemDock::_file_multi_selected));
-	files->connect("empty_clicked", callable_mp(this, &FileSystemDock::_file_list_empty_clicked));
-	files->connect("item_edited", callable_mp(this, &FileSystemDock::_rename_operation_confirm).bind(false));
-	file_list_vb->add_child(files);
 
 	scanning_vb = memnew(VBoxContainer);
 	scanning_vb->hide();
